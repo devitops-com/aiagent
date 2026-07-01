@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-01
+
 ### Added
 - Initial project scaffold: uv + Python 3.13, hatchling src-layout, Typer CLI,
   ruff/mypy/bandit/pytest tooling, CI workflows.
