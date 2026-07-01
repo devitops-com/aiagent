@@ -9,6 +9,23 @@ includes its own Python.
 
 > Status: early MVP under active construction. See `CHANGELOG.md`.
 
+## Install
+
+Linux x86_64, no Python or dependencies required — the bundle ships its own:
+
+```bash
+curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | sh
+```
+
+Installs to `~/.local` by default. Override the prefix, or pin a version, via env:
+
+```bash
+curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_PREFIX=/usr/local sh
+curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_VERSION=v0.1.0 sh
+```
+
+Then run `aiagent --help`. See [Packaging](#packaging) for what the installer bundles.
+
 ## What it does (MVP)
 
 - **Self-optimizing pipelines** — define a typed DSPy program + metric, evaluate
@@ -36,6 +53,7 @@ make check           # ruff + mypy (strict)
 make test            # pytest (hermetic; live devai tests are opt-in: -m live)
 make lock            # regenerate requirements*.txt (needed before `make package`)
 make package         # build dist/aiagent-install.sh
+make release         # tag + publish GitHub release with the installer asset
 ```
 
 Requires `uv` and Python 3.13.

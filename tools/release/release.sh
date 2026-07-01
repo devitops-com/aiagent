@@ -23,6 +23,9 @@ cd "$ROOT"
 BRANCH="main"
 CHANGELOG="CHANGELOG.md"
 INSTALLER="dist/aiagent-install.sh"
+# The uv-style `curl … | install.sh | sh` bootstrap; shipped as a release asset
+# so `…/releases/latest/download/install.sh` resolves.
+BOOTSTRAP="install.sh"
 
 # `|| true` keeps a no-match grep (exit 1) from tripping `set -e`/pipefail before
 # the explicit emptiness check below can emit a friendly diagnostic.
@@ -137,6 +140,7 @@ echo "==> Promoted $CHANGELOG: [Unreleased] -> [$VERSION] - $RELEASE_DATE"
 echo "==> Rebuilding installer"
 bash tools/package/build-binary.sh
 [ -f "$INSTALLER" ] || { echo "ERROR: installer not produced at $INSTALLER" >&2; exit 1; }
+[ -f "$BOOTSTRAP" ] || { echo "ERROR: bootstrap $BOOTSTRAP missing from repo root" >&2; exit 1; }
 
 # --- 6. Commit + annotated tag (local only) ----------------------------------
 # Nothing is on the remote yet: the recovery for a failure here is to undo the
@@ -167,22 +171,22 @@ ERROR: push failed. The release commit and tag $TAG exist locally, but nothing
              git tag -d $TAG && git reset --hard HEAD~1
        (b) Fix the remote state and finish the release manually:
              git push --atomic origin $BRANCH $TAG
-             gh release create $TAG --title 'aiagent $TAG' --notes-file $NOTES_FILE $INSTALLER
+             gh release create $TAG --title 'aiagent $TAG' --notes-file $NOTES_FILE $INSTALLER $BOOTSTRAP
 EOF
     exit 1
 fi
 
-# --- 8. Publish the GitHub release with the installer asset -------------------
+# --- 8. Publish the GitHub release with the installer + bootstrap assets ------
 # Past this point $TAG is pushed; `make release` can't resume (the tag guard
 # blocks it), so recovery is the single manual gh command below.
 echo "==> Creating GitHub release $TAG"
 if ! gh release create "$TAG" \
         --title "aiagent $TAG" \
         --notes-file "$NOTES_FILE" \
-        "$INSTALLER"; then
+        "$INSTALLER" "$BOOTSTRAP"; then
     echo "ERROR: gh release create failed, but $TAG is already pushed." >&2
     echo "       Retry the release step only:" >&2
-    echo "         gh release create $TAG --title 'aiagent $TAG' --notes-file $NOTES_FILE $INSTALLER" >&2
+    echo "         gh release create $TAG --title 'aiagent $TAG' --notes-file $NOTES_FILE $INSTALLER $BOOTSTRAP" >&2
     exit 1
 fi
 
