@@ -93,7 +93,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 ## Commands
 
 `make dev-install` · `make check` (ruff + mypy --strict) · `make test` (hermetic) ·
-`make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging) · `make package`.
+`make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging) · `make package` ·
+`make release` (tag + publish GitHub release; version from pyproject).
 
 ## Invariants & gotchas (don't break these)
 
@@ -133,7 +134,18 @@ entrypoint (banner + `exec $SHELL`).
 zstd), SHA256 integrity, `-s` hermetic launcher. `make lock` first. Prefix via
 `AIAGENT_PREFIX` (default `~/.local`). Keeps numpy/tokenizers/tiktoken for future
 RAG; drops Tcl/Tk + hf_xet; must stay **torch-free** (build guards enforce it).
-Scripts: `tools/package/{build-binary.sh, startup.sh.in}`.
+
+**Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
+versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,
+clean tree, in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
+refused) → rebuild installer → commit → tag → atomic push → `gh release create`
+with **two** assets: `aiagent-install.sh` + `install.sh`. `install.sh` is a POSIX
+**bootstrap** — a makeself archive can't be piped to `sh` (it seeks within `$0`),
+so it downloads the installer to a temp file (auto-removed via `trap`) and runs it.
+Repo `devitops-com/aiagent` is **public**; uv-style install:
+`curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
+`AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`.
+Scripts: `tools/package/{build-binary.sh, startup.sh.in}`, `tools/release/release.sh`, `install.sh`.
 
 ## Testing
 

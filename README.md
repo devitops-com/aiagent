@@ -79,6 +79,20 @@ aiagent --help
 Build deps: `uv`, `makeself`, `curl`, and a C toolchain (to build the static
 zstd once; it's cached under `.cache/`). Run `make lock` before `make package`.
 
+## Releasing
+
+Maintainers cut a release with `make release`. It reads the version from
+`pyproject.toml`, promotes the `CHANGELOG.md` `[Unreleased]` section to that
+version, rebuilds the installer, tags `vX.Y.Z`, pushes, and publishes a GitHub
+release with two assets attached: the `aiagent-install.sh` bundle and the
+`install.sh` bootstrap that powers the [one-liner above](#install).
+
+Before releasing: bump `version` in `pyproject.toml`, add entries under
+`## [Unreleased]` (an empty section is refused), and run `make lock` if
+dependencies changed. Pre-flight guards require a clean tree on `main`, in sync
+with `origin`, with the tag and release not yet present. For CI or
+non-interactive runs, set `AIAGENT_RELEASE_ASSUME_YES=1` to skip the prompt.
+
 ## Deploying as a devai agent
 
 aiagent runs as a first-class agent inside devai's `shell-gpu` / `shell-cpu`
