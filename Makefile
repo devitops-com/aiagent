@@ -11,7 +11,7 @@ RUFF   := $(if $(wildcard .venv/bin/ruff),.venv/bin/ruff,ruff)
 MYPY   := $(if $(wildcard .venv/bin/mypy),.venv/bin/mypy,mypy)
 BANDIT := $(if $(wildcard .venv/bin/bandit),.venv/bin/bandit,bandit)
 
-.PHONY: help dev-install lock test test-cov lint lint-fix typecheck check package clean
+.PHONY: help dev-install lock test test-cov lint lint-fix typecheck check package release clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -52,6 +52,11 @@ check: lint typecheck ## Static checks: ruff + mypy
 
 package: ## Build the self-contained, precompiled installer -> dist/aiagent-install.sh
 	@bash tools/package/build-binary.sh
+
+# --- Release ---
+
+release: ## Cut a release: promote CHANGELOG, rebuild installer, tag + push, publish GitHub release (version from pyproject.toml)
+	@bash tools/release/release.sh
 
 # --- Cleanup ---
 
