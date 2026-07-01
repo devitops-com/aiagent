@@ -45,10 +45,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ksparavec/aiagent"
-Repository = "https://github.com/ksparavec/aiagent"
-Issues = "https://github.com/ksparavec/aiagent/issues"
-Changelog = "https://github.com/ksparavec/aiagent/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/devitops-com/aiagent"
+Repository = "https://github.com/devitops-com/aiagent"
+Issues = "https://github.com/devitops-com/aiagent/issues"
+Changelog = "https://github.com/devitops-com/aiagent/blob/main/CHANGELOG.md"
 
 [project.scripts]
 aiagent = "aiagent.cli.app:main"
