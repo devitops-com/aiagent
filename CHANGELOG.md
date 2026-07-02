@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-02
+
 ### Fixed
 - **CLI crash on argument-bearing commands** (issue #1): the shipped bundle
   paired a pre-Click-8.2 Typer with Click 8.2+, whose `Parameter.make_metavar`
