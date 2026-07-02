@@ -82,4 +82,35 @@ def test_chat_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("typer.prompt", lambda *a, **k: next(answers))
     result = runner.invoke(app, ["chat"])
     assert result.exit_code == 0
-    assert "bot>" in result.stdout
+    assert "bot> hello there" in result.stdout
+
+
+def test_run_chat_single_shot(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.run", _CHAT)
+    result = runner.invoke(app, ["run", "chat", "--text", "hi"])
+    assert result.exit_code == 0
+    assert "answer: hello there" in result.stdout
+
+
+def test_chat_session_resumes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.chat", _CHAT)
+
+    # First run: answer one turn, then quit -> persists to session 'work'.
+    first = iter(["hello", ":quit"])
+    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(first))
+    r1 = runner.invoke(app, ["chat", "--session", "work"])
+    assert r1.exit_code == 0
+
+    # Second run: the same session resumes with the prior turn.
+    second = iter([":quit"])
+    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(second))
+    r2 = runner.invoke(app, ["chat", "--session", "work"])
+    assert r2.exit_code == 0
+    assert "resumed session 'work': 1 turns" in r2.stdout
+
+    # --new discards the resumed history.
+    third = iter([":quit"])
+    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(third))
+    r3 = runner.invoke(app, ["chat", "--session", "work", "--new"])
+    assert r3.exit_code == 0
+    assert "resumed session" not in r3.stdout

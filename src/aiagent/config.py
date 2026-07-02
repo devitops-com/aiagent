@@ -34,6 +34,7 @@ DEFAULT_API_KEY = "local"  # devai single-mode has no auth; non-empty for LiteLL
 DEFAULT_MODEL = "qwen3.5:9b-q8_0"  # placeholder — confirm with `aiagent models list`
 USER_CONFIG_PATH = Path.home() / ".config" / "aiagent" / "config.toml"
 USER_SKILLS_DIR = Path.home() / ".config" / "aiagent" / "skills"
+USER_SESSIONS_DIR = Path.home() / ".config" / "aiagent" / "chat-sessions"
 
 Reasoning = Literal["think", "nothink"]
 
@@ -110,6 +111,9 @@ class Settings(BaseSettings):
 
     # Skills
     skills_dir: Path = USER_SKILLS_DIR
+
+    # Chat
+    sessions_dir: Path = USER_SESSIONS_DIR
 
     @field_validator("api_key")
     @classmethod

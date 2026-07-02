@@ -19,6 +19,7 @@ _VARS = [
     "AIAGENT_DEFAULT_ALIAS",
     "AIAGENT_NUM_THREADS",
     "AIAGENT_SKILLS_DIR",
+    "AIAGENT_SESSIONS_DIR",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
@@ -36,3 +37,5 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     # Default to an empty user skills dir so discovery sees only built-ins unless
     # a test overrides AIAGENT_SKILLS_DIR.
     monkeypatch.setenv("AIAGENT_SKILLS_DIR", str(tmp_path / "no_user_skills"))
+    # Isolate chat sessions to a temp dir so `aiagent chat` never touches ~/.config.
+    monkeypatch.setenv("AIAGENT_SESSIONS_DIR", str(tmp_path / "chat_sessions"))
