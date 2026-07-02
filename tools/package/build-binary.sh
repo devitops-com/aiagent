@@ -184,16 +184,54 @@ makeself --nox11 --nocomp --sha256 --tar-quietly \
 rm -rf "$STAGE" "$MKDIR"
 
 # --- 13. Smoke test: install to a temp prefix + run --------------------
+# Exercises the two failure modes that shipped in v0.1.0:
+#   (a) Typer/Click make_metavar: render usage/help for an ARG-bearing command.
+#   (b) sourceless skill loader: actually load the built-in skill entry .pyc.
 echo "==> Smoke test (install to a temp prefix + run)"
 TPREFIX="$DIST/.smoketest"
 rm -rf "$TPREFIX"
 AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 "$TPREFIX/bin/$APP" --help >/dev/null
-"$TPREFIX/bin/$APP" skills list | grep -q extract \
-    || { echo "ERROR: built-in skills not discoverable from the bundle" >&2; exit 1; }
+# (a) An Arguments panel forces make_metavar(ctx) on a positional; a pre-8.2
+# Typer/Click pair crashes the render here. Capture the output (do NOT pipe into
+# grep -q: under `set -o pipefail` its early exit SIGPIPEs the producer and
+# fails the pipeline) and assert the arg metavar (SKILL) actually rendered.
+run_help="$("$TPREFIX/bin/$APP" run --help)" \
+    || { echo "ERROR: 'run --help' crashed (Typer/Click make_metavar break?)" >&2; exit 1; }
+case "$run_help" in
+    *SKILL*) ;;
+    *) echo "ERROR: 'run --help' did not render the SKILL argument" >&2; exit 1 ;;
+esac
+"$TPREFIX/bin/$APP" eval --help >/dev/null
+skills_out="$("$TPREFIX/bin/$APP" skills list)"
+case "$skills_out" in
+    *extract*) ;;
+    *) echo "ERROR: built-in skills not discoverable from the bundle" >&2; exit 1 ;;
+esac
+# (b) load the built-in entry modules through the actual (sourceless) loader —
+# build_module() imports the .pyc and constructs the dspy.Module (no router).
+# Run from an ON-DISK file so __main__ has a real __file__: litellm imports
+# python-dotenv, whose find_dotenv() walks the stack for a frame whose file
+# exists on disk and asserts if none do. A sourceless tree has no such frame
+# except a real script file — exactly the installed `aiagent` console script's
+# situation — so a stdin-heredoc probe asserts here where a file probe does not.
+PROBE="$DIST/.skill-load-probe.py"
+cat > "$PROBE" <<'PYEOF'
+from aiagent.config import load_settings
+from aiagent.skills.registry import load_registry
+from aiagent.skills.loader import build_module
+reg, _ = load_registry(load_settings())
+for name in ("chat", "extract"):
+    build_module(reg.get(name))
+PYEOF
+if ! "$TPREFIX/bin/python${PY_VERSION}" -s "$PROBE" >/dev/null; then
+    echo "ERROR: built-in skills fail to load from the sourceless bundle" >&2
+    rm -f "$PROBE"; exit 1
+fi
+rm -f "$PROBE"
 "$TPREFIX/bin/$APP" doctor --offline >/dev/null
 rm -rf "$TPREFIX"
-echo "    ok (--help, skills list -> extract, doctor --offline)"
+echo "    ok (--help, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
 
 # --- 14. Report --------------------------------------------------------
 SIZE="$(du -h "$OUT" | cut -f1)"

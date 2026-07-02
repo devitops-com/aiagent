@@ -10,10 +10,11 @@ import pytest
 from aiagent.config import load_settings
 from aiagent.exceptions import (
     AmbiguousSkillError,
+    SkillLoadError,
     SkillManifestError,
     SkillNotFoundError,
 )
-from aiagent.skills.base import SkillSource, parse_skill_md
+from aiagent.skills.base import Skill, SkillManifest, SkillSource, parse_skill_md
 from aiagent.skills.loader import build_metric, build_module
 from aiagent.skills.registry import load_registry
 from aiagent.skills.router import route
@@ -90,3 +91,45 @@ def test_build_module_returns_dspy_module() -> None:
 def test_build_metric_default_is_callable() -> None:
     registry, _ = load_registry(load_settings())
     assert callable(build_metric(registry.get("extract")))
+
+
+def test_builtin_entry_loads_by_module_not_file_path(tmp_path: Path) -> None:
+    """A built-in resolves its entry by dotted import from its directory name,
+    not a ``skill.py`` on disk.
+
+    The directory (named ``chat``) is empty — no ``skill.py`` inside — so a
+    successful load proves the loader imports ``aiagent.builtin_skills.chat.skill``
+    by module, the sourceless-bundle condition where ``skill.py`` is stripped and
+    only ``skill.pyc`` remains (issue #2).
+    """
+    d = tmp_path / "chat"  # dir name -> aiagent.builtin_skills.chat.skill
+    d.mkdir()
+    skill = Skill(
+        manifest=SkillManifest(name="chat", description="x"),
+        source=SkillSource.BUILTIN,
+        directory=d,
+    )
+    assert isinstance(build_module(skill), dspy.Module)
+
+
+def test_builtin_entry_unknown_module_raises(tmp_path: Path) -> None:
+    """An unresolvable built-in subpackage surfaces a clear SkillLoadError."""
+    d = tmp_path / "not_a_real_builtin"
+    d.mkdir()
+    skill = Skill(
+        manifest=SkillManifest(name="nope", description="x"),
+        source=SkillSource.BUILTIN,
+        directory=d,
+    )
+    with pytest.raises(SkillLoadError, match="could not import entry module"):
+        build_module(skill)
+
+
+def test_user_entry_missing_module_raises(tmp_path: Path) -> None:
+    skill = Skill(
+        manifest=SkillManifest(name="mine", description="x"),
+        source=SkillSource.USER,
+        directory=tmp_path,  # no skill.py
+    )
+    with pytest.raises(SkillLoadError, match="entry module skill.py not found"):
+        build_module(skill)

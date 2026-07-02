@@ -2,8 +2,13 @@
 
 ``dspy`` is imported lazily inside the functions (never at module top), so the
 import-light CLI commands stay fast and ``import aiagent.cli.app`` never pulls
-DSPy. Skill entry modules are imported by file path, which works identically for
-built-in (package-data) and user skills.
+DSPy.
+
+Built-in skill entry modules load by dotted import
+(``aiagent.builtin_skills.<dir>.<module>``) so they resolve their compiled
+``.pyc`` in the sourceless bundle, where the ``.py`` sources are stripped. User
+skills load by file path (they ship their ``.py`` source, so no ``.pyc``
+fallback is needed) since they live outside the ``aiagent`` package.
 """
 
 from __future__ import annotations
@@ -17,13 +22,40 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from aiagent.exceptions import SkillLoadError
-from aiagent.skills.base import Skill
+from aiagent.skills.base import Skill, SkillSource
 
 if TYPE_CHECKING:
     import dspy
 
+# Package that holds the shipped built-in skills (mirrors discovery.py).
+_BUILTIN_PACKAGE = "aiagent.builtin_skills"
+
 
 def _import_entry(skill: Skill) -> ModuleType:
+    if skill.source is SkillSource.BUILTIN:
+        return _import_builtin_entry(skill)
+    return _import_user_entry(skill)
+
+
+def _import_builtin_entry(skill: Skill) -> ModuleType:
+    """Import a built-in skill's entry module by its dotted package name.
+
+    The subpackage is the skill's on-disk directory name (not the manifest
+    ``name``, which may differ), so this resolves the sourceless ``.pyc`` in the
+    shipped bundle — where ``skill.py`` is stripped — exactly as it resolves the
+    ``.py`` in a dev tree.
+    """
+    module_name = f"{_BUILTIN_PACKAGE}.{skill.directory.name}.{skill.entrypoint_module}"
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        raise SkillLoadError(
+            f"{skill.name}: could not import entry module {module_name!r}: {exc}"
+        ) from exc
+
+
+def _import_user_entry(skill: Skill) -> ModuleType:
+    """Import a user skill's entry module from its ``<module>.py`` file."""
     path = skill.directory / f"{skill.entrypoint_module}.py"
     if not path.is_file():
         raise SkillLoadError(f"{skill.name}: entry module {path.name} not found")

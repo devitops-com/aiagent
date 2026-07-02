@@ -5,12 +5,26 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
 from typer.testing import CliRunner
 
 from aiagent import __version__
 from aiagent.cli.app import app
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("cmd", ["run", "eval", "optimize"])
+def test_arg_command_help_renders_metavar(cmd: str) -> None:
+    """Help for a command with a positional argument must render its metavar.
+
+    A pre-Click-8.2 Typer overrides ``make_metavar`` without ``ctx`` and crashes
+    the usage/help render for any arg-bearing command; this guards that pairing
+    can't regress (issue #1).
+    """
+    result = runner.invoke(app, [cmd, "--help"])
+    assert result.exit_code == 0
+    assert "SKILL" in result.stdout
 
 
 def test_version() -> None:
