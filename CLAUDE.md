@@ -134,6 +134,11 @@ entrypoint (banner + `exec $SHELL`).
 zstd), SHA256 integrity, `-s` hermetic launcher. `make lock` first. Prefix via
 `AIAGENT_PREFIX` (default `~/.local`). Keeps numpy/tokenizers/tiktoken for future
 RAG; drops Tcl/Tk + hf_xet; must stay **torch-free** (build guards enforce it).
+Deps install with **`--no-cache-dir`** (always fresh from the configured index).
+The build then installs to a temp prefix and **audits every module against
+`requirements.txt`** at both the dist-info **and** imported-`__version__` level
+(`tools/package/verify-versions.py`, hf-xet allow-listed), failing on any stale
+module — the reproducibility guard for the v0.1.0 metadata/code split.
 
 **Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
 versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,

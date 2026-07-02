@@ -83,9 +83,13 @@ rm -f "$STAGE/python/lib/python${PY_VERSION}/EXTERNALLY-MANAGED"
   done )
 
 # --- 6. Install aiagent + deps into the staged interpreter -------------
-echo "==> Installing $APP + dependencies"
+# --no-cache-dir: never reuse the build host's pip cache — always fetch the
+# current artifacts through the configured index/proxy, so a stale or poisoned
+# cached wheel body can't ship (the metadata/code split behind v0.1.0). The
+# bundle's module versions are then verified against the lock in step 13.
+echo "==> Installing $APP + dependencies (no cache; fresh from the configured index)"
 "$PY" -m pip install --no-input --disable-pip-version-check --no-warn-script-location \
-    --no-compile "$WHEEL" -c "$CONSTRAINTS" >/dev/null
+    --no-cache-dir --no-compile "$WHEEL" -c "$CONSTRAINTS" >/dev/null
 SP="$STAGE/python/lib/python${PY_VERSION}/site-packages"
 ( cd "$SP" && rm -rf pip setuptools wheel pkg_resources _distutils_hack 2>/dev/null || true )
 find "$SP" -name direct_url.json -delete 2>/dev/null || true
@@ -191,6 +195,15 @@ echo "==> Smoke test (install to a temp prefix + run)"
 TPREFIX="$DIST/.smoketest"
 rm -rf "$TPREFIX"
 AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
+
+# Version audit: confirm every installed module matches requirements.txt, at both
+# the dist-info metadata AND the imported-code (__version__) level. A build where
+# those disagree — the v0.1.0 defect — fails here instead of shipping. hf-xet is
+# stripped in step 6b, so its absence is expected.
+echo "==> Verifying bundled module versions against requirements.txt"
+"$TPREFIX/bin/python${PY_VERSION}" -s "$ROOT/tools/package/verify-versions.py" "$REQ" hf-xet \
+    || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; rm -rf "$TPREFIX"; exit 1; }
+
 "$TPREFIX/bin/$APP" --help >/dev/null
 # (a) An Arguments panel forces make_metavar(ctx) on a positional; a pre-8.2
 # Typer/Click pair crashes the render here. Capture the output (do NOT pipe into
