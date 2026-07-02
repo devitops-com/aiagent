@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **CLI crash on argument-bearing commands** (issue #1): the shipped bundle
+  paired a pre-Click-8.2 Typer with Click 8.2+, whose `Parameter.make_metavar`
+  gained a required `ctx` argument — mutually incompatible, so rendering usage or
+  help for any command with a positional argument (`run`, `eval`, online
+  `doctor`) crashed. Dependency floors are pinned to a compatible era
+  (`typer>=0.16`, `click>=8.2`).
+- **Built-in skills failing to load from the sourceless bundle** (issue #2):
+  skill entry modules were imported by `skill.py` file path, but the bundle
+  strips `.py` sources (`.pyc` only), so every built-in raised `entry module
+  skill.py not found`. Built-ins now load by dotted import
+  (`aiagent.builtin_skills.<dir>.<module>`), which resolves the compiled `.pyc`.
+- `aiagent run chat --text "..."` crashing with
+  `ChatSkill.forward() got an unexpected keyword argument 'text'`.
+
+### Added
+- **Resumable multi-turn chat**: `aiagent chat` persists its conversation history
+  to a named session (`--session/-s`, `--new`, `:reset`) under
+  `<config>/chat-sessions/` (`AIAGENT_SESSIONS_DIR`), so a conversation can be
+  resumed across invocations. History is optional, so `run chat --text` also
+  works single-shot.
+
+### Changed
+- **Bundle build hardening** against the non-reproducible artifact behind the
+  v0.1.0 defect: dependencies install with `--no-cache-dir` (always fetched fresh
+  from the configured index), and the build now audits every bundled module
+  against `requirements.txt` at both the dist-info **and** imported-`__version__`
+  level, failing on any stale/mismatched module.
+
 ## [0.1.0] - 2026-07-01
 
 ### Added
