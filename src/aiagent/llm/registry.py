@@ -1,9 +1,11 @@
 """Model registry: friendly aliases -> devai model strings.
 
 Pure and dspy-free so it is trivially testable. The single source of truth for
-composing devai's control-surface model string ``<model>[@<ctx>]::<reasoning>``
+composing devai's control-surface model string ``<model>::<reasoning>[@<ctx>]``
 (prefixed with the ``openai/`` provider so DSPy/LiteLLM uses the OpenAI-compatible
-path against ``api_base``).
+path against ``api_base``). The router's parse is right-to-left with ``@<ctx>``
+outermost, so ``@<ctx>`` must be the final token or it survives into the model
+name and Ollama rejects it (issue #3).
 """
 
 from __future__ import annotations
@@ -36,11 +38,21 @@ DEFAULT_REGISTRY: dict[str, ModelSpec] = {
 
 def get_registry(
     overrides: dict[str, dict[str, Any]] | None = None,
+    default_model: str | None = None,
 ) -> dict[str, ModelSpec]:
-    """``DEFAULT_REGISTRY`` merged with ``overrides`` (override wins)."""
+    """``DEFAULT_REGISTRY`` merged with ``overrides`` (override wins).
+
+    When ``default_model`` is non-empty (the configured ``AIAGENT_MODEL``), the
+    ``default`` alias resolves to it instead of the baked placeholder, so the
+    configured model stays the single source of truth for skills and callers
+    that route through the ``default`` alias (issue #4). Its ``reasoning`` is
+    left unset so it inherits ``default_reasoning`` at compose time.
+    """
     merged = dict(DEFAULT_REGISTRY)
     for alias, raw in (overrides or {}).items():
         merged[alias] = ModelSpec(**raw)
+    if default_model:
+        merged["default"] = ModelSpec(model=default_model)
     return merged
 
 
@@ -60,15 +72,17 @@ def compose_model_string(
     default_reasoning: Reasoning,
     ctx_override: int | None = None,
 ) -> str:
-    """Build ``<provider>/<model>[@<ctx>]::<reasoning>``.
+    """Build ``<provider>/<model>::<reasoning>[@<ctx>]``.
 
     The single place the ``::nothink`` default materialises: a spec with
-    ``reasoning=None`` inherits ``default_reasoning``.
+    ``reasoning=None`` inherits ``default_reasoning``. ``@<ctx>`` is appended
+    **after** ``::<reasoning>`` so it is the outermost (last) token, which is
+    what the devai router's right-to-left ctx parser expects (issue #3).
     """
     ctx = ctx_override if ctx_override is not None else spec.ctx
     reasoning = spec.reasoning or default_reasoning
-    suffix = f"@{ctx}" if ctx is not None else ""
-    return f"{spec.provider}/{spec.model}{suffix}::{reasoning}"
+    ctx_suffix = f"@{ctx}" if ctx is not None else ""
+    return f"{spec.provider}/{spec.model}::{reasoning}{ctx_suffix}"
 
 
 def list_model_aliases(

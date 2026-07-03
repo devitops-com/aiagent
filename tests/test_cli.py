@@ -33,6 +33,14 @@ def test_version() -> None:
     assert __version__ in result.stdout
 
 
+def test_version_tracks_package_metadata() -> None:
+    # `__version__` must derive from the installed package metadata, never a
+    # hand-maintained literal that can drift from the release (issue #5).
+    from importlib.metadata import version
+
+    assert __version__ == version("aiagent")
+
+
 def test_config_show_defaults() -> None:
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0

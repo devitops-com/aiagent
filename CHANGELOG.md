@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Control-surface model string composed in the wrong order** (issue #3):
+  `compose_model_string` emitted `@<ctx>` **before** `::<reasoning>`. The devai
+  router only strips `@<ctx>` when it is the outermost (last) token, so with a
+  context set (`AIAGENT_CONTEXT`) the `@<ctx>` survived into the model name and
+  Ollama rejected the request with `invalid model name`. The string is now
+  `openai/<model>::<reasoning>[@<ctx>]`, with `@<ctx>` last.
+- **`aiagent version` out of sync with the packaged version** (issue #5): the
+  command printed a hand-maintained `__version__` literal that drifted from
+  `pyproject.toml` (printed `0.1.0` on the `v0.1.1` bundle). `__version__` now
+  derives from the installed package metadata, so it always tracks the release.
+
+### Changed
+- **`AIAGENT_MODEL` is the single source of truth for the `default` alias**
+  (issue #4): when a model is configured, the registry's `default` alias (and
+  `aiagent models list`) resolves to it instead of the baked placeholder, so
+  skills and callers that route through the `default` alias no longer silently
+  use a different model.
+
 ## [0.1.1] - 2026-07-02
 
 ### Fixed

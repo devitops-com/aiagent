@@ -12,8 +12,9 @@ from aiagent.llm.registry import (
 
 
 def test_compose_with_ctx_and_reasoning() -> None:
+    # @<ctx> must be the outermost (last) token, after ::<reasoning> (issue #3).
     spec = ModelSpec(model="qwen3.5:9b-q8_0", ctx=131072, reasoning="nothink")
-    assert compose_model_string(spec, "think") == "openai/qwen3.5:9b-q8_0@131072::nothink"
+    assert compose_model_string(spec, "think") == "openai/qwen3.5:9b-q8_0::nothink@131072"
 
 
 def test_compose_inherits_default_reasoning() -> None:
@@ -23,7 +24,7 @@ def test_compose_inherits_default_reasoning() -> None:
 
 def test_compose_ctx_override_wins() -> None:
     spec = ModelSpec(model="m", ctx=8192)
-    assert compose_model_string(spec, "nothink", ctx_override=4096) == "openai/m@4096::nothink"
+    assert compose_model_string(spec, "nothink", ctx_override=4096) == "openai/m::nothink@4096"
 
 
 def test_resolve_known_alias() -> None:
@@ -40,6 +41,22 @@ def test_resolve_raw_model_name() -> None:
 def test_overrides_merge() -> None:
     reg = get_registry({"fast": {"model": "x:1b", "reasoning": "nothink"}})
     assert "fast" in reg and reg["fast"].model == "x:1b"
+
+
+def test_default_alias_tracks_configured_model() -> None:
+    # AIAGENT_MODEL (default_model) makes the `default` alias the single source
+    # of truth instead of the baked placeholder (issue #4).
+    reg = get_registry(default_model="qwen3.6:27b-q4_K_M")
+    assert reg["default"].model == "qwen3.6:27b-q4_K_M"
+    assert reg["default"].reasoning is None  # inherits default_reasoning at compose
+    composed = compose_model_string(reg["default"], "nothink")
+    assert composed == "openai/qwen3.6:27b-q4_K_M::nothink"
+
+
+def test_default_alias_falls_back_to_placeholder() -> None:
+    # No configured model -> the shipped placeholder alias is retained.
+    assert get_registry(default_model="")["default"].model == "qwen3.5:9b-q8_0"
+    assert get_registry()["default"].model == "qwen3.5:9b-q8_0"
 
 
 def test_list_aliases_sorted() -> None:

@@ -25,7 +25,7 @@ def _model_string(settings: Settings, alias_or_model: str | None) -> str:
     registry's ``default_alias``.
     """
     target = alias_or_model or settings.model or settings.default_alias
-    registry = get_registry(settings.registry_overrides)
+    registry = get_registry(settings.registry_overrides, settings.model)
     spec = resolve(target, registry)
     return compose_model_string(
         spec, settings.default_reasoning, settings.context_tokens

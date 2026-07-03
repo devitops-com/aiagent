@@ -81,7 +81,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 
 - `config.py` — pydantic-settings; **env-fallback resolution** (see invariants).
 - `llm/registry.py` (pure, no dspy) → `compose_model_string` produces
-  `openai/<model>[@<ctx>]::<reasoning>`. `llm/lm.py` — `build_lm`/`configure_default`/`routing`.
+  `openai/<model>::<reasoning>[@<ctx>]` (`@<ctx>` outermost/last, per the devai
+  router's right-to-left parse). `llm/lm.py` — `build_lm`/`configure_default`/`routing`.
 - `core/` — `pipeline.py` (`Pipeline(dspy.Module)` base), `extract.py`
   (`ExtractExpense` + `ExtractExpenseModule`), `evaluate.py`.
 - `data/loader.py`, `metrics/extraction.py` (dual-use metric), `optimize/harness.py`.

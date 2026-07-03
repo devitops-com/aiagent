@@ -22,7 +22,7 @@ def list_models(
 ) -> None:
     """List alias -> model strings, and (online) what the router advertises."""
     settings = get_settings()
-    registry = get_registry(settings.registry_overrides)
+    registry = get_registry(settings.registry_overrides, settings.model)
     aliases = list_model_aliases(registry, settings.default_reasoning)
 
     advertised: list[str] = []
