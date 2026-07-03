@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-03
+
 ### Fixed
 - **Control-surface model string composed in the wrong order** (issue #3):
   `compose_model_string` emitted `@<ctx>` **before** `::<reasoning>`. The devai
