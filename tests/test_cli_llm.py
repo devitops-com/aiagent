@@ -62,6 +62,61 @@ def test_eval_no_devset() -> None:
     assert result.exit_code == 1
 
 
+def test_run_verbose_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.run", _EXTRACT)
+    result = runner.invoke(
+        app, ["run", "extract", "--text", "Cafe 4.95 on 2026-02-14", "-v"]
+    )
+    assert result.exit_code == 0
+    assert "[-v] skill=extract model=dummy" in result.stderr
+    assert "[-v] elapsed=" in result.stderr
+    assert "calls=1" in result.stderr
+
+
+def test_run_verbose_dspy_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.run", _EXTRACT)
+    result = runner.invoke(
+        app, ["run", "extract", "--text", "Cafe 4.95 on 2026-02-14", "-vv"]
+    )
+    assert result.exit_code == 0
+    assert "System message:" in result.stderr
+    assert "User message:" in result.stderr
+    assert "Cafe 4.95 on 2026-02-14" in result.stderr
+
+
+def test_run_verbose_wire_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.run", _EXTRACT)
+    result = runner.invoke(
+        app, ["run", "extract", "--text", "Cafe 4.95 on 2026-02-14", "-vvv"]
+    )
+    assert result.exit_code == 0
+    assert "[-vvv] response_model=" in result.stderr
+
+
+def test_run_no_verbose_flag_is_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.run", _EXTRACT)
+    result = runner.invoke(app, ["run", "extract", "--text", "x"])
+    assert result.exit_code == 0
+    assert result.stderr == ""
+
+
+def test_eval_verbose(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.eval_cmd", _EXTRACT)
+    result = runner.invoke(app, ["eval", "extract", "-vv"])
+    assert result.exit_code == 0
+    assert "[-v] skill=extract" in result.stderr
+    assert "System message:" in result.stderr
+
+
+def test_optimize_verbose(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.optimize_cmd", _EXTRACT)
+    out = tmp_path / "extract.json"
+    result = runner.invoke(app, ["optimize", "extract", "--out", str(out), "-v"])
+    assert result.exit_code == 0
+    assert "[-v] skill=extract" in result.stderr
+    assert "[-v] elapsed=" in result.stderr
+
+
 def test_optimize_extract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_dummy(monkeypatch, "aiagent.cli.optimize_cmd", _EXTRACT)
     out = tmp_path / "extract.json"

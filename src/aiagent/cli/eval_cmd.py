@@ -8,6 +8,7 @@ import typer
 
 from aiagent.cli._common import get_settings, print_json
 from aiagent.cli._runtime import configure_lm
+from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
 from aiagent.skills.loader import build_metric, build_module, dataset_path
 from aiagent.skills.registry import load_registry
@@ -22,6 +23,7 @@ def eval_skill(
     model: str | None = typer.Option(None, "--model", help="Model override."),
     num_threads: int | None = typer.Option(None, "--num-threads"),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
+    verbose: int = VERBOSE_OPTION,
 ) -> None:
     """Evaluate a skill over its dev set. Requires a reachable router."""
     from aiagent.core.evaluate import evaluate
@@ -42,7 +44,8 @@ def eval_skill(
     metric = build_metric(sk)
     examples = load_expense_set(dev_path)
     threads = num_threads if num_threads is not None else settings.num_threads
-    result = evaluate(module, examples, metric, num_threads=threads)
+    with verbosity_scope(verbose=verbose, skill=skill):
+        result = evaluate(module, examples, metric, num_threads=threads)
 
     if as_json:
         print_json({"skill": skill, "score": result.score, "n": result.n})

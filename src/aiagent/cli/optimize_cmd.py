@@ -8,6 +8,7 @@ import typer
 
 from aiagent.cli._common import get_settings
 from aiagent.cli._runtime import configure_lm
+from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
 from aiagent.skills.loader import build_metric, build_module, dataset_path
 from aiagent.skills.registry import load_registry
@@ -25,6 +26,7 @@ def optimize_skill(
     ),
     model: str | None = typer.Option(None, "--model", help="Model override."),
     num_threads: int | None = typer.Option(None, "--num-threads"),
+    verbose: int = VERBOSE_OPTION,
 ) -> None:
     """Optimize a skill against its metric. Requires a reachable router."""
     from aiagent.data.loader import load_expense_set
@@ -45,18 +47,19 @@ def optimize_skill(
     dev = load_expense_set(dev_path) if dev_path is not None else None
     threads = num_threads if num_threads is not None else settings.num_threads
 
-    result = optimize(
-        module,
-        train,
-        metric,
-        method=optimizer,
-        devset=dev,
-        save_path=out,
-        num_threads=threads,
-        max_bootstrapped_demos=settings.max_bootstrapped_demos,
-        max_labeled_demos=settings.max_labeled_demos,
-        max_rounds=settings.max_rounds,
-    )
+    with verbosity_scope(verbose=verbose, skill=skill):
+        result = optimize(
+            module,
+            train,
+            metric,
+            method=optimizer,
+            devset=dev,
+            save_path=out,
+            num_threads=threads,
+            max_bootstrapped_demos=settings.max_bootstrapped_demos,
+            max_labeled_demos=settings.max_labeled_demos,
+            max_rounds=settings.max_rounds,
+        )
 
     typer.echo(f"optimizer : {optimizer}")
     if result.baseline_score is not None and result.after_score is not None:

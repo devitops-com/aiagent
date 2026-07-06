@@ -10,6 +10,7 @@ import typer
 
 from aiagent.cli._common import get_settings, print_json
 from aiagent.cli._runtime import configure_lm, prediction_to_dict
+from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
 from aiagent.skills.loader import build_module
 from aiagent.skills.registry import load_registry
@@ -27,6 +28,7 @@ def run(
         False, "--route", help="Treat SKILL as free text and route to a skill."
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
+    verbose: int = VERBOSE_OPTION,
 ) -> None:
     """Run a skill once and print its prediction. Requires a reachable router."""
     settings = get_settings()
@@ -36,7 +38,8 @@ def run(
     inputs = _resolve_inputs(text, input_file)
     configure_lm(settings, model)
     module = build_module(target)
-    data = prediction_to_dict(module(**inputs))
+    with verbosity_scope(verbose=verbose, skill=target.name):
+        data = prediction_to_dict(module(**inputs))
 
     if as_json:
         print_json(data)
