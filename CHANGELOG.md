@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Adds repeatable -v flags shared by aiagent run/eval/optimize, each level
+strictly additive and written to stderr (stdout stays clean for --json):
+    
+- -v  routing: resolved skill, composed model string, elapsed time, call count.
+- -vv DSPy level: the ChatAdapter-rendered system/user messages and parsed
+      completion for every LM call made in the invocation, via DSPy's own
+      pretty_print_history.
+- -vvv LLM/wire level: per-call usage/cost, plus real over-the-wire HTTP
+      (the actual request LiteLLM sent and the raw response body).
+
+
 ## [0.1.2] - 2026-07-03
 
 ### Fixed
