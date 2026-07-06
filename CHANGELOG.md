@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-07
+
 Adds repeatable -v flags shared by aiagent run/eval/optimize, each level
 strictly additive and written to stderr (stdout stays clean for --json):
     
