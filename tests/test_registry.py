@@ -27,6 +27,36 @@ def test_compose_ctx_override_wins() -> None:
     assert compose_model_string(spec, "nothink", ctx_override=4096) == "openai/m::nothink@4096"
 
 
+def test_compose_ctx_baked_into_model_name() -> None:
+    # A trailing @<ctx> already on the model name must end up last, with the
+    # reasoning suffix inserted *before* it (issue #6), matching the ordering
+    # the AIAGENT_CONTEXT path produces (issue #3).
+    spec = ModelSpec(model="SomeModel@131072")
+    assert compose_model_string(spec, "nothink") == "openai/SomeModel::nothink@131072"
+
+
+def test_compose_ctx_baked_with_reasoning_on_spec() -> None:
+    spec = ModelSpec(model="SomeModel@131072", reasoning="think")
+    assert compose_model_string(spec, "nothink") == "openai/SomeModel::think@131072"
+
+
+def test_compose_ctx_override_beats_baked_model_ctx() -> None:
+    # An explicit ctx (spec.ctx or ctx_override) wins over the baked @<ctx>,
+    # and the baked one is not duplicated.
+    spec = ModelSpec(model="SomeModel@131072", ctx=8192)
+    assert compose_model_string(spec, "nothink") == "openai/SomeModel::nothink@8192"
+    assert (
+        compose_model_string(spec, "nothink", ctx_override=4096)
+        == "openai/SomeModel::nothink@4096"
+    )
+
+
+def test_compose_non_numeric_at_suffix_is_left_untouched() -> None:
+    # Only a trailing @<int> is treated as ctx; anything else stays in the name.
+    spec = ModelSpec(model="org/model@latest")
+    assert compose_model_string(spec, "nothink") == "openai/org/model@latest::nothink"
+
+
 def test_resolve_known_alias() -> None:
     reg = get_registry()
     assert resolve("default", reg).model == "qwen3.5:9b-q8_0"
