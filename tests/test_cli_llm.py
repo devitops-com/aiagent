@@ -131,13 +131,48 @@ def test_optimize_no_trainset() -> None:
     assert result.exit_code == 1
 
 
+def _feed(monkeypatch: pytest.MonkeyPatch, lines: list[str]) -> None:
+    """Drive the chat REPL by feeding ``lines`` to PromptReader.read."""
+    answers = iter(lines)
+    # A non-empty prefill simulates the user accepting the pre-filled line as-is.
+    monkeypatch.setattr(
+        "aiagent.cli.repl.PromptReader.read",
+        lambda self, prompt, prefill="": prefill or next(answers),
+    )
+
+
 def test_chat_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_dummy(monkeypatch, "aiagent.cli.chat", _CHAT)
-    answers = iter(["hi", ":reset", "again", ":quit"])
-    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(answers))
+    _feed(monkeypatch, ["hi", ":reset", "again", ":quit"])
     result = runner.invoke(app, ["chat"])
     assert result.exit_code == 0
     assert "bot> hello there" in result.stdout
+
+
+def test_chat_history_picker_prefills(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ':history' routes through the fzf picker; the selection is submitted next.
+    _install_dummy(monkeypatch, "aiagent.cli.chat", _CHAT)
+    _feed(monkeypatch, [":history", ":quit"])
+    monkeypatch.setattr(
+        "aiagent.cli.repl.PromptReader.pick_history", lambda self: "picked prompt"
+    )
+    monkeypatch.setattr(
+        "aiagent.cli.repl.PromptReader.fzf_enabled", property(lambda self: True)
+    )
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert "bot> hello there" in result.stdout
+
+
+def test_chat_history_picker_hint_without_fzf(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch, "aiagent.cli.chat", _CHAT)
+    _feed(monkeypatch, [":history", ":quit"])
+    monkeypatch.setattr(
+        "aiagent.cli.repl.PromptReader.fzf_enabled", property(lambda self: False)
+    )
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert "fzf not found" in result.stdout
 
 
 def test_run_chat_single_shot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,21 +186,18 @@ def test_chat_session_resumes(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_dummy(monkeypatch, "aiagent.cli.chat", _CHAT)
 
     # First run: answer one turn, then quit -> persists to session 'work'.
-    first = iter(["hello", ":quit"])
-    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(first))
+    _feed(monkeypatch, ["hello", ":quit"])
     r1 = runner.invoke(app, ["chat", "--session", "work"])
     assert r1.exit_code == 0
 
     # Second run: the same session resumes with the prior turn.
-    second = iter([":quit"])
-    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(second))
+    _feed(monkeypatch, [":quit"])
     r2 = runner.invoke(app, ["chat", "--session", "work"])
     assert r2.exit_code == 0
     assert "resumed session 'work': 1 turns" in r2.stdout
 
     # --new discards the resumed history.
-    third = iter([":quit"])
-    monkeypatch.setattr("typer.prompt", lambda *a, **k: next(third))
+    _feed(monkeypatch, [":quit"])
     r3 = runner.invoke(app, ["chat", "--session", "work", "--new"])
     assert r3.exit_code == 0
     assert "resumed session" not in r3.stdout

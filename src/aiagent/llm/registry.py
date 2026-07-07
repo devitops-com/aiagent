@@ -10,11 +10,15 @@ name and Ollama rejects it (issue #3).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 Reasoning = Literal["think", "nothink"]
+
+# A trailing ``@<int>`` on a model name is the gateway's context-window suffix.
+_BAKED_CTX = re.compile(r"@(\d+)$")
 
 
 class ModelSpec(BaseModel):
@@ -78,11 +82,33 @@ def compose_model_string(
     ``reasoning=None`` inherits ``default_reasoning``. ``@<ctx>`` is appended
     **after** ``::<reasoning>`` so it is the outermost (last) token, which is
     what the devai router's right-to-left ctx parser expects (issue #3).
+
+    A ``@<ctx>`` already baked into ``spec.model`` (a gateway that hands aiagent
+    a model name with the context suffix pre-attached) is peeled off and
+    re-emitted last, so this path matches the ``AIAGENT_CONTEXT`` path instead of
+    producing ``<model>@<ctx>::<reasoning>`` (issue #6). An explicit ctx
+    (``ctx_override`` or ``spec.ctx``) takes precedence over the baked one and is
+    never duplicated.
     """
+    model, baked_ctx = _split_baked_ctx(spec.model)
     ctx = ctx_override if ctx_override is not None else spec.ctx
+    if ctx is None:
+        ctx = baked_ctx
     reasoning = spec.reasoning or default_reasoning
     ctx_suffix = f"@{ctx}" if ctx is not None else ""
-    return f"{spec.provider}/{spec.model}::{reasoning}{ctx_suffix}"
+    return f"{spec.provider}/{model}::{reasoning}{ctx_suffix}"
+
+
+def _split_baked_ctx(model: str) -> tuple[str, int | None]:
+    """Split a trailing ``@<int>`` context suffix off a model name.
+
+    Returns ``(bare_model, ctx)`` — ``ctx`` is ``None`` when the name has no
+    numeric ``@`` suffix, leaving names like ``org/model@latest`` untouched.
+    """
+    match = _BAKED_CTX.search(model)
+    if match is None:
+        return model, None
+    return model[: match.start()], int(match.group(1))
 
 
 def list_model_aliases(

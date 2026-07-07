@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`aiagent chat` REPL line editing, history, and completion** (issues #7, #8):
+  the `you>` prompt now uses `readline` for inline emacs-style editing, Up/Down
+  history, and `Ctrl-R` reverse search, with history persisted across sessions
+  under `sessions_dir/history`. Tab completes the `:` directives, and when
+  `fzf` is on `PATH`, `:history` opens a vertical fuzzy picker over past prompts
+  and `:help` a command palette; both pre-fill the chosen line for editing
+  before submit. `fzf` and `readline` are optional — the REPL degrades cleanly
+  when either is absent.
+
+### Fixed
+- **Reasoning suffix appended after a pre-baked `@<ctx>`** (issue #6):
+  `compose_model_string` glued `::<reasoning>` **after** a `@<ctx>` already
+  baked into the model name (`<model>@<ctx>::<reasoning>`), which strict
+  gateways reject. A trailing `@<int>` context suffix on the model name is now
+  peeled off and re-emitted last, matching the `AIAGENT_CONTEXT` path
+  (`<model>::<reasoning>@<ctx>`); an explicit ctx still wins and is never
+  duplicated.
+
 ## [0.1.3] - 2026-07-07
 
 Adds repeatable -v flags shared by aiagent run/eval/optimize, each level
