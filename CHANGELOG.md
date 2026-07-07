@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-07
+
 ### Added
 - **`aiagent chat` REPL line editing, history, and completion** (issues #7, #8):
   the `you>` prompt now uses `readline` for inline emacs-style editing, Up/Down
