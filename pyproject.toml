@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aiagent"
-version = "0.1.3"
+version = "0.1.4"
 description = "Programmatic DSPy agent framework: query optimization, goal-reaching loops, and autonomous data processing over local LLMs"
 readme = "README.md"
 # Supported-version floor (package metadata). The exact build / dev / CI
