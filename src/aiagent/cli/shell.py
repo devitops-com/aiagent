@@ -35,4 +35,4 @@ def shell(
     typer.echo("           aiagent chat")
 
     sh = os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"
-    os.execvp(sh, [sh])
+    os.execvp(sh, [sh])  # nosec B606 - sh is from $SHELL/PATH, never user input
