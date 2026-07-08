@@ -20,12 +20,17 @@ _VARS = [
     "AIAGENT_NUM_THREADS",
     "AIAGENT_SKILLS_DIR",
     "AIAGENT_SESSIONS_DIR",
+    "AIAGENT_PROXY_URL",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
     "OLLAMA_HOST",
     "OLLAMA_DEFAULT_MODEL",
     "CONTEXT",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
 ]
 
 

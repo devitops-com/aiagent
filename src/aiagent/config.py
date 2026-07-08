@@ -5,7 +5,8 @@ Settings resolve with this precedence (highest first):
 1. ``AIAGENT_*`` environment variables
 2. a TOML file at ``~/.config/aiagent/config.toml``
 3. **devai-injected** environment (``OPENAI_BASE_URL`` / ``OLLAMA_HOST`` /
-   ``OPENAI_API_KEY`` / ``OPENAI_MODEL`` / ``OLLAMA_DEFAULT_MODEL`` / ``CONTEXT``)
+   ``OPENAI_API_KEY`` / ``OPENAI_MODEL`` / ``OLLAMA_DEFAULT_MODEL`` / ``CONTEXT`` /
+   ``HTTPS_PROXY`` / ``HTTP_PROXY``)
 4. code defaults
 
 Layer 3 is what lets aiagent run as a devai agent that "knows nothing about
@@ -31,6 +32,11 @@ from aiagent.exceptions import AiagentConfigError
 
 DEFAULT_API_BASE = "http://devai-router:11434/v1"
 DEFAULT_API_KEY = "local"  # devai single-mode has no auth; non-empty for LiteLLM
+# devai's fail-closed egress proxy (pipelock): the lab's ONLY route to the
+# internet. Outbound URL fetches (e.g. the `sentiment` skill) go through it; TLS
+# is MITM-inspected but transparently trusted because the lab image bakes the
+# pipelock CA into the system store and sets SSL_CERT_FILE, which httpx honors.
+DEFAULT_PROXY_URL = "http://devai-pipelock:8888"
 DEFAULT_MODEL = "qwen3.5:9b-q8_0"  # placeholder — confirm with `aiagent models list`
 USER_CONFIG_PATH = Path.home() / ".config" / "aiagent" / "config.toml"
 USER_SKILLS_DIR = Path.home() / ".config" / "aiagent" / "skills"
@@ -74,6 +80,14 @@ class _DevaiEnvSource(PydanticBaseSettingsSource):
         ctx = os.environ.get("AIAGENT_CONTEXT") or os.environ.get("CONTEXT")
         if ctx and ctx.isdigit():
             out["context_tokens"] = int(ctx)
+        proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+        )
+        if proxy:
+            out["proxy_url"] = proxy
         return out
 
 
@@ -93,6 +107,9 @@ class Settings(BaseSettings):
     request_timeout_s: float = 900.0  # generous: vLLM/SGLang cold start can be slow
     num_retries: int = 2
     cache: bool = True
+    # Forward proxy for outbound URL fetches (pipelock). Empty string disables
+    # proxying (direct connection), e.g. when running outside devai-net.
+    proxy_url: str = DEFAULT_PROXY_URL
 
     # Model selection
     model: str = ""  # effective model name; empty -> use default_alias from registry

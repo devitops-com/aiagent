@@ -48,6 +48,9 @@ dependencies = [
     # httpx powers the doctor/models probes; also a dspy transitive dep, but we
     # use it directly so declare it explicitly.
     "httpx>=0.27",
+    # pypdf extracts text from PDF sources for the `sentiment` skill. Pure Python
+    # (no C build), so it stays inside the torch-free packaging guards.
+    "pypdf>=5",
 ]
 
 [project.urls]
@@ -137,6 +140,12 @@ exclude = ["src/aiagent/builtin_skills/"]
 # dspy ships no py.typed / stubs; don't fail strict mode on its untyped surface.
 [[tool.mypy.overrides]]
 module = ["dspy", "dspy.*"]
+ignore_missing_imports = true
+
+# pypdf is imported lazily inside ingest.extract_text; tolerate stub variance
+# across pinned versions.
+[[tool.mypy.overrides]]
+module = ["pypdf", "pypdf.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

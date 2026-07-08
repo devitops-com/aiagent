@@ -26,6 +26,7 @@ from aiagent.cli.eval_cmd import eval_skill
 from aiagent.cli.models import models_app
 from aiagent.cli.optimize_cmd import optimize_skill
 from aiagent.cli.run import run as run_cmd
+from aiagent.cli.sentiment import sentiment as sentiment_cmd
 from aiagent.cli.shell import shell as shell_cmd
 from aiagent.cli.skills_cmd import skills_app
 from aiagent.exceptions import AiagentError
@@ -64,6 +65,7 @@ app.add_typer(skills_app)
 # Runtime commands. These touch DSPy, but import it lazily inside their handlers,
 # so registering them here keeps `import aiagent.cli.app` dspy-free.
 app.command("run", context_settings=CLI_CONTEXT_SETTINGS)(run_cmd)
+app.command("sentiment", context_settings=CLI_CONTEXT_SETTINGS)(sentiment_cmd)
 app.command("eval", context_settings=CLI_CONTEXT_SETTINGS)(eval_skill)
 app.command("optimize", context_settings=CLI_CONTEXT_SETTINGS)(optimize_skill)
 app.command("chat", context_settings=CLI_CONTEXT_SETTINGS)(chat_cmd)

@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`sentiment` built-in skill + `aiagent sentiment` command.** Scores one or
+  more data sources on a −10 (very negative) … +10 (very positive) scale and
+  reports statistical properties — **volatility** (sentiment spread across the
+  content), **model uncertainty** (self-disagreement across resamples), and
+  **significance** (a one-sample t-test vs. neutral, with t-statistic, two-sided
+  p-value, and a confidence label) — plus a plain-language explanation. Human
+  output by default, `--json` for structured output. Sources are supplied with
+  repeatable `--text`, `--file` (`.txt`/`.md`/`.html`/`.pdf`), and `--url`;
+  local files are read directly and URLs are fetched through the devai egress
+  proxy (pipelock). Works out of the box with no dataset or configuration — the
+  skill is run-only, so `aiagent run sentiment --text "..."` works too. New
+  `proxy_url` setting (`AIAGENT_PROXY_URL`, default `http://devai-pipelock:8888`;
+  an injected `HTTPS_PROXY`/`HTTP_PROXY` is honored). Adds a pure-Python `pypdf`
+  dependency (stays torch-free).
+
 ## [0.1.4] - 2026-07-07
 
 ### Added

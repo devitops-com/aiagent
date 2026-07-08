@@ -189,6 +189,46 @@ Provide exactly one of `--text` or `--input`. With `--route`, the positional
 argument is matched against skills by exact name first, then by keyword overlap
 over each skill's name + description (see [routing](#routing)).
 
+### `sentiment` — analyze sentiment of data sources
+
+Scores one or more data sources on a **−10** (very negative) … **+10** (very
+positive) scale and reports statistical properties plus a plain-language
+explanation. Works out of the box — just supply the sources. Requires a
+reachable router.
+
+```bash
+aiagent sentiment --text "The rollout was flawless and the team is thrilled."
+aiagent sentiment --file review.txt --file notes.md         # local files
+aiagent sentiment --url https://example.com/post --json     # fetched via proxy
+aiagent sentiment --file report.pdf --url https://... -t "extra note"  # mix + repeat
+```
+
+| Option | Description |
+|--------|-------------|
+| `--text`, `-t <str>` | Raw text to analyze (repeatable). |
+| `--file`, `-f <path>` | Local file: `.txt`/`.md`/`.html`/`.pdf` (repeatable). |
+| `--url`, `-u <url>` | URL to fetch and analyze via the proxy (repeatable). |
+| `--model <alias\|name>` | Model override. |
+| `--resample <n>` | LM samples per segment for the uncertainty estimate (default 3). |
+| `--max-segments <n>` | Cap on analyzed segments; content is merged, never dropped (default 24). |
+| `--json` | Emit the full result (scores, stats, per-segment breakdown, sources) as JSON. |
+| `-v` / `-vv` / `-vvv` | Increase verbosity. |
+
+Supply at least one `--text`/`--file`/`--url` (repeatable and mixable). The
+corpus is split into segments and each is scored several times; the reported
+fields are:
+
+- **sentiment** — mean score on the −10..+10 scale, with a qualitative polarity.
+- **volatility** — standard deviation of sentiment across segments (how mixed).
+- **model uncertainty** — mean self-disagreement across the resamples.
+- **significance** — a one-sample t-test of the segment scores against neutral
+  (0): a t-statistic, two-sided p-value, and a confidence label; plus an
+  approximate 95% confidence interval.
+
+URLs egress through the configured [`proxy_url`](#settings) (devai's pipelock);
+the skill is run-only, so `aiagent run sentiment --text "..."` also works for a
+single text blob.
+
 ### `eval` — score a skill over a dev set
 
 Evaluates a skill across its dev set and reports the aggregate metric score.
@@ -306,6 +346,7 @@ except the router URL it is handed. The devai vars it understands:
 | `OPENAI_API_KEY` | `api_key` |
 | `OPENAI_MODEL` / `OLLAMA_DEFAULT_MODEL` | `model` |
 | `CONTEXT` / `AIAGENT_CONTEXT` | `context_tokens` |
+| `HTTPS_PROXY` / `HTTP_PROXY` | `proxy_url` |
 
 ### Settings
 
@@ -319,6 +360,7 @@ the same name. Inspect the resolved result with `aiagent config show`.
 | `request_timeout_s` | `900` | Per-request timeout; generous, to absorb cold starts. |
 | `num_retries` | `2` | LM retries. Worst-case wait is `(num_retries + 1) * timeout`. |
 | `cache` | `true` | Enable DSPy/LiteLLM response caching. |
+| `proxy_url` | `http://devai-pipelock:8888` | Forward proxy for outbound URL fetches (the `sentiment` skill). Empty string = direct connection. An injected `HTTPS_PROXY`/`HTTP_PROXY` overrides the default. |
 | `model` | `""` | Effective model name; empty falls back to `default_alias`. |
 | `default_alias` | `default` | Registry alias used when no model is configured. |
 | `default_reasoning` | `nothink` | `think` or `nothink`; the `::<reasoning>` suffix. |

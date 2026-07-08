@@ -109,8 +109,11 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
   `builtin_skills/` (exec-loaded plugins with same-named `skill.py`).
 - **Config precedence:** `AIAGENT_*` env > TOML (`~/.config/aiagent/config.toml`) >
   devai-injected env (`OPENAI_BASE_URL`/`OLLAMA_HOST`+`/v1`/`OPENAI_API_KEY`/
-  `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`/`CONTEXT`) > defaults. `api_key` must be
-  **non-empty** (default `"local"`).
+  `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`/`CONTEXT`/`HTTPS_PROXY`/`HTTP_PROXY`) >
+  defaults. `api_key` must be **non-empty** (default `"local"`). `proxy_url`
+  (default `http://devai-pipelock:8888`) is the forward proxy for outbound URL
+  fetches (empty string = direct); httpx trusts the pipelock MITM CA via the
+  system store (`SSL_CERT_FILE`), so no `verify=False`.
 - **Adapter:** DSPy default **ChatAdapter**; do NOT rely on native tool-calling or
   server JSON mode (devai backends strip/ignore them).
 - **Optimizers:** `from dspy.teleprompt import BootstrapFewShot, MIPROv2`. Persist
@@ -162,8 +165,9 @@ devai tests: `pytest -m live` (run inside `devai-net`).
 
 ## Scope (MVP) / not yet
 
-In: extraction demo, skills, optimize/eval, chat, packaging. **Deferred:** MCP,
-RAG/embeddings (libs kept, not wired), weight finetuning (no torch).
+In: extraction demo, sentiment analysis (files/URLs/text via the `ingest` layer),
+skills, optimize/eval, chat, packaging. **Deferred:** MCP, RAG/embeddings (libs
+kept, not wired), weight finetuning (no torch).
 
 ## References
 

@@ -27,6 +27,10 @@ class DevaiUnreachableError(AiagentError):
     """The devai router could not be reached or did not respond as expected."""
 
 
+class SourceError(AiagentError):
+    """A data source (local file or URL) could not be read or yielded no text."""
+
+
 class SkillError(AiagentError):
     """Base class for skill discovery / loading failures."""
 
