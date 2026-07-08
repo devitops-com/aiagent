@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-08
+
 ### Added
 - **`sentiment` built-in skill + `aiagent sentiment` command.** Scores one or
   more data sources on a −10 (very negative) … +10 (very positive) scale and
