@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     api_base: str = DEFAULT_API_BASE
     api_key: str = DEFAULT_API_KEY
     request_timeout_s: float = 900.0  # generous: vLLM/SGLang cold start can be slow
-    num_retries: int = 2
+    num_retries: int = 2  # retries for *transient* errors only (see RetryAwareLM)
     cache: bool = True
     # Forward proxy for outbound URL fetches (pipelock). Empty string disables
     # proxying (direct connection), e.g. when running outside devai-net.

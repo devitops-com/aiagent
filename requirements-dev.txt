@@ -963,7 +963,9 @@ librt==0.11.0 \
 litellm==1.90.1 \
     --hash=sha256:a0c79d9efa1dbc031371348540466240216c898c68687d4c2de1343ca3ac3dd0 \
     --hash=sha256:d90482c7f3a7dfa3f4d88b255cb4e1e60793d7452efcc0fe461a719df52c283e
-    # via dspy
+    # via
+    #   aiagent (pyproject.toml)
+    #   dspy
 markdown-it-py==4.2.0 \
     --hash=sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49 \
     --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a

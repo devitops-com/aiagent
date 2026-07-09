@@ -51,6 +51,10 @@ dependencies = [
     # pypdf extracts text from PDF sources for the `sentiment` skill. Pure Python
     # (no C build), so it stays inside the torch-free packaging guards.
     "pypdf>=5",
+    # litellm is a dspy transitive dep, but RetryAwareLM references its exception
+    # classes directly (status-aware retry, issue #10), so declare it explicitly.
+    # Floor matches dspy's own requirement.
+    "litellm>=1.64.0",
 ]
 
 [project.urls]
@@ -147,6 +151,13 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["pypdf", "pypdf.*"]
 ignore_missing_imports = true
+
+# litellm's partial typing doesn't re-export its exception classes; treat it as
+# untyped (RetryAwareLM keys on its exception types + HTTP status codes).
+[[tool.mypy.overrides]]
+module = ["litellm"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.ruff]
 src = ["src", "tests"]

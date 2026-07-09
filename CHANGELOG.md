@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Non-retryable 4xx errors were retried, hammering the router** (issue #10):
+  DSPy hands `num_retries` to `litellm.completion(retry_strategy=
+  "exponential_backoff_retry")`, whose retry loop is not status-aware, so a
+  permanent client error (`400`/`404`/`422`) was re-issued several times — a
+  ~150s retry storm that, against a model router, repeatedly reloaded a backend
+  that would always fail. A new `RetryAwareLM` (`llm/retry_lm.py`) wraps
+  `dspy.LM`: it disables litellm's blind retry and retries **only** transient
+  failures (connection errors, timeouts, `429`, and `5xx`), surfacing `4xx`
+  client errors immediately — matching Codex/Claude Code/OpenCode. Cold-start
+  resilience (generous `request_timeout_s` + retries on transient errors) is
+  preserved; `num_retries` now bounds transient retries only.
+
 ## [0.2.0] - 2026-07-08
 
 ### Added

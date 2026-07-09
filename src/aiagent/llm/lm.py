@@ -16,6 +16,7 @@ import dspy
 
 from aiagent.config import Settings
 from aiagent.llm.registry import compose_model_string, get_registry, resolve
+from aiagent.llm.retry_lm import RetryAwareLM
 
 
 def _model_string(settings: Settings, alias_or_model: str | None) -> str:
@@ -41,15 +42,17 @@ def build_lm(
     """Build a ``dspy.LM`` for ``alias_or_model`` (or the configured default).
 
     The generous ``timeout`` (default 900s) absorbs devai's on-demand backend
-    cold starts; combined with ``num_retries`` the worst-case wait is
-    ``(num_retries + 1) * timeout``.
+    cold starts. ``RetryAwareLM`` retries only *transient* failures (connection /
+    timeout / 429 / 5xx), so for those the worst-case wait stays
+    ``(num_retries + 1) * timeout`` while non-retryable 4xx client errors fail
+    fast instead of hammering the router (issue #10).
     """
-    return dspy.LM(
+    return RetryAwareLM(
         _model_string(settings, alias_or_model),
         api_base=settings.api_base,
         api_key=settings.api_key,
         model_type="chat",
-        num_retries=settings.num_retries,
+        max_retries=settings.num_retries,
         cache=settings.cache,
         timeout=settings.request_timeout_s,
         **overrides,
