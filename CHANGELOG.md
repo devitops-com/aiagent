@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-09
+
 ### Fixed
 - **Non-retryable 4xx errors were retried, hammering the router** (issue #10):
   DSPy hands `num_retries` to `litellm.completion(retry_strategy=
