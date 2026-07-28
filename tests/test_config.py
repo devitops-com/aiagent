@@ -73,3 +73,38 @@ def test_health_and_models_urls() -> None:
 def test_redacted_masks_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "secret")
     assert load_settings().redacted()["api_key"] == "***"
+
+
+def test_endpoints_defaults_to_api_base() -> None:
+    assert load_settings().endpoints() == [DEFAULT_API_BASE]
+
+
+def test_discover_endpoints_comma_separated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "AIAGENT_DISCOVER_ENDPOINTS", "http://r:11435/v1, http://r:11436/v1"
+    )
+    s = load_settings()
+    assert s.discover_endpoints == ["http://r:11435/v1", "http://r:11436/v1"]
+    # api_base stays first, so adding endpoints is purely additive.
+    assert s.endpoints() == [DEFAULT_API_BASE, "http://r:11435/v1", "http://r:11436/v1"]
+
+
+def test_discover_endpoints_json_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "AIAGENT_DISCOVER_ENDPOINTS", '["http://r:11435/v1", "http://r:11436/v1"]'
+    )
+    assert load_settings().discover_endpoints == [
+        "http://r:11435/v1",
+        "http://r:11436/v1",
+    ]
+
+
+def test_endpoints_deduplicates_api_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIAGENT_API_BASE", "http://r:11434/v1")
+    monkeypatch.setenv("AIAGENT_DISCOVER_ENDPOINTS", "http://r:11434/v1,http://r:11435/v1")
+    assert load_settings().endpoints() == ["http://r:11434/v1", "http://r:11435/v1"]
+
+
+def test_discover_endpoints_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIAGENT_DISCOVER_ENDPOINTS", "")
+    assert load_settings().endpoints() == [DEFAULT_API_BASE]

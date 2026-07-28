@@ -15,22 +15,19 @@ from contextlib import contextmanager
 import dspy
 
 from aiagent.config import Settings
-from aiagent.llm.registry import compose_model_string, get_registry, resolve
+from aiagent.llm.registry import ModelSpec, compose_model_string, get_registry, resolve
 from aiagent.llm.retry_lm import RetryAwareLM
 
 
-def _model_string(settings: Settings, alias_or_model: str | None) -> str:
-    """Resolve the effective model string for ``alias_or_model``.
+def _resolve_spec(settings: Settings, alias_or_model: str | None) -> ModelSpec:
+    """Resolve the effective :class:`ModelSpec` for ``alias_or_model``.
 
     ``None`` -> ``settings.model`` (picker/env injected) if set, else the
     registry's ``default_alias``.
     """
     target = alias_or_model or settings.model or settings.default_alias
     registry = get_registry(settings.registry_overrides, settings.model)
-    spec = resolve(target, registry)
-    return compose_model_string(
-        spec, settings.default_reasoning, settings.context_tokens
-    )
+    return resolve(target, registry)
 
 
 def build_lm(
@@ -41,16 +38,23 @@ def build_lm(
 ) -> dspy.LM:
     """Build a ``dspy.LM`` for ``alias_or_model`` (or the configured default).
 
+    An alias carrying its own ``api_base`` / ``api_key`` is called at that
+    endpoint; everything else falls back to the global settings, so a session
+    can reach several backends without relaunching (issue #11).
+
     The generous ``timeout`` (default 900s) absorbs devai's on-demand backend
     cold starts. ``RetryAwareLM`` retries only *transient* failures (connection /
     timeout / 429 / 5xx), so for those the worst-case wait stays
     ``(num_retries + 1) * timeout`` while non-retryable 4xx client errors fail
     fast instead of hammering the router (issue #10).
     """
+    spec = _resolve_spec(settings, alias_or_model)
     return RetryAwareLM(
-        _model_string(settings, alias_or_model),
-        api_base=settings.api_base,
-        api_key=settings.api_key,
+        compose_model_string(
+            spec, settings.default_reasoning, settings.context_tokens
+        ),
+        api_base=spec.api_base or settings.api_base,
+        api_key=spec.api_key or settings.api_key,
         model_type="chat",
         max_retries=settings.num_retries,
         cache=settings.cache,

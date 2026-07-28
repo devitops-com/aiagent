@@ -6,6 +6,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Per-model endpoints and discovery across several endpoints** (issue #11):
+  aiagent was structurally single-endpoint — one process could talk to exactly
+  one OpenAI-compatible base URL, so the backend had to be chosen before launch
+  and changing it meant quitting and relaunching. `ModelSpec` now carries
+  optional `api_base` / `api_key`, so an alias can name the endpoint that serves
+  it while aliases that name none keep using the global settings:
+
+  ```toml
+  [registry_overrides.qwen-vllm]
+  model    = "Qwen3.5-9B-NVFP4"
+  ctx      = 262144
+  api_base = "http://devai-router:11435/v1"
+  ```
+
+  A new `discover_endpoints` setting (`AIAGENT_DISCOVER_ENDPOINTS`, a JSON array
+  or a comma-separated list) adds endpoints for `aiagent models list` and
+  `aiagent doctor` to probe alongside `api_base`. `models list` groups the
+  advertised models per endpoint; `doctor` reports each endpoint's status
+  (`ok` / `degraded` / `unreachable`) and takes the worst as its own. An
+  unreachable endpoint is a warning on that endpoint rather than a fatal error,
+  so a partially-up stack still lists what it can. `api_base` is always probed
+  first and the list is de-duplicated, so single-endpoint output and exit codes
+  are unchanged.
+
+### Changed
+- **A per-alias `ctx` now wins over the global `context_tokens`** (issue #11).
+  The global used to override every alias, so an alias declaring `ctx = 32768`
+  still composed `@65536` under `AIAGENT_CONTEXT=65536`. It is now a default for
+  aliases that state no preference — backends behind different endpoints
+  legitimately top out at different context windows. Precedence is alias `ctx`,
+  then `context_tokens`, then a `@<ctx>` baked into the model name.
+
+### Fixed
+- **A per-alias `api_base` (or any unknown key) was silently discarded**
+  (issue #11): pydantic's `extra='ignore'` dropped unknown keys inside
+  `[registry_overrides.<alias>]`, so the alias composed as though the key had
+  never been written — no error, no warning. Unknown and invalid keys are now
+  rejected with an error naming the alias and the keys a spec accepts.
+- **`aiagent models list` under-reported the context window** (issue #11): the
+  listing composed each alias without `context_tokens`, so it displayed
+  `openai/Qwen3-8B-NVFP4::nothink` while the request carried
+  `...::nothink@65536`. Display-only, but misleading; the two now agree.
+- **`aiagent doctor` reported `ok` when `/v1/models` failed** on a router whose
+  `/health` was fine. A non-200 from either probe is now `degraded`.
+
 ## [0.2.1] - 2026-07-09
 
 ### Fixed

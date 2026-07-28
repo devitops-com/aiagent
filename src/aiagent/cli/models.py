@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import typer
 
 from aiagent.cli._common import CLI_CONTEXT_SETTINGS, get_settings, print_json
 from aiagent.llm.registry import get_registry, list_model_aliases
+
+if TYPE_CHECKING:  # import-light: discovery pulls httpx, so only for typing
+    from aiagent.llm.discovery import EndpointReport
 
 models_app = typer.Typer(
     name="models",
@@ -20,43 +25,56 @@ models_app = typer.Typer(
 def list_models(
     as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    """List alias -> model strings, and (online) what the router advertises."""
+    """List alias -> model strings, and (online) what each endpoint advertises."""
     settings = get_settings()
     registry = get_registry(settings.registry_overrides, settings.model)
-    aliases = list_model_aliases(registry, settings.default_reasoning)
+    aliases = list_model_aliases(
+        registry, settings.default_reasoning, settings.context_tokens
+    )
 
-    advertised: list[str] = []
-    error: str | None = None
-    import httpx  # local import keeps module load light
+    from aiagent.llm.discovery import probe  # local import keeps module load light
 
-    try:
-        with httpx.Client(timeout=settings.request_timeout_s) as client:
-            resp = client.get(settings.models_url())
-            if resp.status_code == 200:
-                advertised = [
-                    item.get("id", "") for item in resp.json().get("data", [])
-                ]
-            else:
-                error = f"HTTP {resp.status_code}"
-    except (httpx.HTTPError, ValueError) as exc:
-        error = str(exc)
+    reports = probe(settings.endpoints(), settings.request_timeout_s)
+    primary = reports[0]
 
     if as_json:
         print_json(
             {
-                "aliases": [{"alias": a, "model": m} for a, m in aliases],
-                "advertised": advertised,
-                "error": error,
+                "aliases": [
+                    {
+                        "alias": alias,
+                        "model": model,
+                        "api_base": registry[alias].api_base or settings.api_base,
+                    }
+                    for alias, model in aliases
+                ],
+                # `advertised` / `error` describe `api_base`, as they always
+                # have; `endpoints` carries every probed endpoint.
+                "advertised": list(primary.models),
+                "error": primary.error,
+                "endpoints": [report.as_dict() for report in reports],
             }
         )
         return
 
     typer.echo("Aliases:")
     for alias, model in aliases:
-        typer.echo(f"  {alias:<12} -> {model}")
+        endpoint = registry[alias].api_base
+        suffix = f"  [{endpoint}]" if endpoint else ""
+        typer.echo(f"  {alias:<12} -> {model}{suffix}")
+
     typer.echo("\nRouter-advertised models:")
-    if advertised:
-        for mid in advertised:
-            typer.echo(f"  {mid}")
-    else:
-        typer.echo(f"  (none — {error or 'router returned no models'})")
+    if len(reports) == 1:
+        _echo_models(primary, indent="  ")
+        return
+    for report in reports:
+        typer.echo(f"  {report.endpoint}")
+        _echo_models(report, indent="    ")
+
+
+def _echo_models(report: EndpointReport, indent: str) -> None:
+    if report.models:
+        for mid in report.models:
+            typer.echo(f"{indent}{mid}")
+        return
+    typer.echo(f"{indent}(none — {report.error or 'router returned no models'})")

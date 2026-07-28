@@ -16,13 +16,15 @@ of env vars and aiagent adapts with no devai-specific code.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import (
     BaseSettings,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
@@ -50,6 +52,18 @@ def _ollama_host_to_base(host: str | None) -> str | None:
     if not host:
         return None
     return host.rstrip("/") + "/v1"
+
+
+def models_url_for(api_base: str) -> str:
+    """OpenAI-compatible models listing endpoint for ``api_base``."""
+    return api_base.rstrip("/") + "/models"
+
+
+def health_url_for(api_base: str) -> str:
+    """Router health endpoint for ``api_base`` (``/health`` lives at the root)."""
+    base = api_base.rstrip("/")
+    root = base[:-3] if base.endswith("/v1") else base
+    return root.rstrip("/") + "/health"
 
 
 class _DevaiEnvSource(PydanticBaseSettingsSource):
@@ -104,6 +118,10 @@ class Settings(BaseSettings):
     # Connection
     api_base: str = DEFAULT_API_BASE
     api_key: str = DEFAULT_API_KEY
+    # Extra OpenAI-compatible bases that `models list` / `doctor` also probe.
+    # `api_base` is always probed first, so this list is purely additive and an
+    # empty list keeps single-endpoint behavior unchanged.
+    discover_endpoints: Annotated[list[str], NoDecode] = Field(default_factory=list)
     request_timeout_s: float = 900.0  # generous: vLLM/SGLang cold start can be slow
     num_retries: int = 2  # retries for *transient* errors only (see RetryAwareLM)
     cache: bool = True
@@ -139,6 +157,24 @@ class Settings(BaseSettings):
             raise ValueError("api_key must be non-empty (LiteLLM rejects an empty key)")
         return v
 
+    @field_validator("discover_endpoints", mode="before")
+    @classmethod
+    def _parse_endpoints(cls, v: Any) -> Any:
+        """Accept a TOML array, a JSON array, or a comma-separated string.
+
+        ``NoDecode`` on the field hands the raw ``AIAGENT_DISCOVER_ENDPOINTS``
+        string here instead of demanding JSON, so both
+        ``["http://a/v1","http://b/v1"]`` and ``http://a/v1,http://b/v1`` work.
+        """
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            return json.loads(text)
+        return [part.strip() for part in text.split(",") if part.strip()]
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -157,13 +193,22 @@ class Settings(BaseSettings):
 
     def health_url(self) -> str:
         """Router health endpoint (``/health`` lives at the root, not under /v1)."""
-        base = self.api_base.rstrip("/")
-        root = base[:-3] if base.endswith("/v1") else base
-        return root.rstrip("/") + "/health"
+        return health_url_for(self.api_base)
 
     def models_url(self) -> str:
         """OpenAI-compatible models listing endpoint."""
-        return self.api_base.rstrip("/") + "/models"
+        return models_url_for(self.api_base)
+
+    def endpoints(self) -> list[str]:
+        """Every endpoint to probe: ``api_base`` first, then ``discover_endpoints``.
+
+        Duplicates are dropped and order is preserved, so listing ``api_base``
+        again in ``discover_endpoints`` is harmless. With no extra endpoints
+        configured this is just ``[api_base]`` — the single-endpoint behavior
+        aiagent has always had.
+        """
+        ordered = [self.api_base, *self.discover_endpoints]
+        return list(dict.fromkeys(e for e in ordered if e))
 
     def redacted(self) -> dict[str, Any]:
         """A dict of settings with the api_key masked, for display."""
