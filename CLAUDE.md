@@ -83,6 +83,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 - `llm/registry.py` (pure, no dspy) → `compose_model_string` produces
   `openai/<model>::<reasoning>[@<ctx>]` (`@<ctx>` outermost/last, per the devai
   router's right-to-left parse). `llm/lm.py` — `build_lm`/`configure_default`/`routing`.
+  `llm/discovery.py` (httpx, no dspy) probes `settings.endpoints()` for
+  `doctor`/`models list`.
 - `core/` — `pipeline.py` (`Pipeline(dspy.Module)` base), `extract.py`
   (`ExtractExpense` + `ExtractExpenseModule`), `evaluate.py`.
 - `data/loader.py`, `metrics/extraction.py` (dual-use metric), `optimize/harness.py`.
@@ -107,6 +109,11 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 - **dspy ships no type stubs.** `dspy.Module`/`dspy.Signature` subclasses need
   `# type: ignore[misc]`; there's a mypy `dspy.*` override and an `exclude` for
   `builtin_skills/` (exec-loaded plugins with same-named `skill.py`).
+- **Multi-endpoint:** a `ModelSpec` may carry `api_base`/`api_key` (falling back
+  to the globals), so one session can address several backends; `settings.
+  endpoints()` = `api_base` + `discover_endpoints`, de-duplicated. Alias `ctx`
+  beats the global `context_tokens`; unknown `registry_overrides` keys raise
+  (`extra='forbid'`) instead of being dropped (issue #11).
 - **Config precedence:** `AIAGENT_*` env > TOML (`~/.config/aiagent/config.toml`) >
   devai-injected env (`OPENAI_BASE_URL`/`OLLAMA_HOST`+`/v1`/`OPENAI_API_KEY`/
   `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`/`CONTEXT`/`HTTPS_PROXY`/`HTTP_PROXY`) >

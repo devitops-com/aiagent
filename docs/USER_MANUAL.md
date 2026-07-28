@@ -101,11 +101,11 @@ import DSPy, so they start instantly. The commands that run a model (`run`,
 
 ### `doctor` — check connectivity
 
-Pre-flight check. Online, it probes the router's `GET /health` and
-`GET /v1/models`; offline, it validates configuration only (no network).
+Pre-flight check. Online, it probes `GET /health` and `GET /v1/models` on every
+configured endpoint; offline, it validates configuration only (no network).
 
 ```bash
-aiagent doctor                 # full check against the router
+aiagent doctor                 # full check against every configured endpoint
 aiagent doctor --offline       # config sanity only (build / CI, no router)
 aiagent doctor --timeout 30    # override per-probe timeout (seconds)
 aiagent doctor --json          # machine-readable report
@@ -125,6 +125,26 @@ router is unreachable it prints a cold-start hint: devai's vLLM/SGLang backends
 are recreated on demand and the first request to a cold backend can take minutes —
 raise `AIAGENT_REQUEST_TIMEOUT` (seconds) if a call appears to hang.
 
+**Several endpoints.** With [`discover_endpoints`](#multiple-endpoints) set, each
+endpoint is probed and reported on its own line, and the overall `status` is the
+worst of them:
+
+```
+api_base : http://devai-router:11434/v1
+model    : (default alias: default)
+status   : degraded
+models   : qwen3.5:9b-q8_0, llama3.2:3b
+endpoints:
+  http://devai-router:11434/v1   ok           qwen3.5:9b-q8_0, llama3.2:3b
+  http://devai-router:11435/v1   ok           Qwen3.5-9B-NVFP4, gpt-oss-20b
+  http://devai-router:11436/v1   unreachable  [Errno 111] Connection refused
+```
+
+An endpoint is `ok` when both probes return 200, `degraded` when it answers but
+either probe does not, and `unreachable` when it cannot be reached at all. In the
+`--json` report the per-endpoint detail lives under `endpoints`; the top-level
+`health`, `models_endpoint`, and `models` keys keep describing `api_base`.
+
 ### `config show` — inspect resolved settings
 
 Prints the fully resolved settings after applying the precedence chain (env → TOML
@@ -138,13 +158,34 @@ aiagent config show --json
 ### `models list` — aliases and advertised models
 
 Shows the registry aliases (each expanded to its composed model string) and, when
-the router is reachable, the models it actually advertises. The registry default
+an endpoint is reachable, the models it actually advertises. The registry default
 is a **placeholder** — use this command to confirm the real served tag.
 
 ```bash
 aiagent models list
 aiagent models list --json
 ```
+
+The composed string is the one the request really carries, `@<ctx>` suffix
+included. An alias pinned to its own endpoint shows that endpoint alongside it,
+and with [`discover_endpoints`](#multiple-endpoints) set the advertised models are
+grouped per endpoint:
+
+```
+Aliases:
+  default      -> openai/qwen3.5:9b-q8_0::nothink@65536
+  qwen-vllm    -> openai/Qwen3.5-9B-NVFP4::nothink@262144  [http://devai-router:11435/v1]
+
+Router-advertised models:
+  http://devai-router:11434/v1
+    qwen3.5:9b-q8_0
+  http://devai-router:11435/v1
+    Qwen3.5-9B-NVFP4
+  http://devai-router:11436/v1
+    (none — [Errno 111] Connection refused)
+```
+
+An endpoint that is down is reported in place; the others are still listed.
 
 ### `skills list` — discovered skills
 
@@ -357,6 +398,7 @@ the same name. Inspect the resolved result with `aiagent config show`.
 |-------|---------|---------|
 | `api_base` | `http://devai-router:11434/v1` | OpenAI-compatible router base URL. |
 | `api_key` | `local` | API key; must be **non-empty** (LiteLLM rejects empty). devai single-mode has no auth. |
+| `discover_endpoints` | `[]` | Extra endpoints `models list` / `doctor` also probe (see below). |
 | `request_timeout_s` | `900` | Per-request timeout; generous, to absorb cold starts. |
 | `num_retries` | `2` | LM retries. Worst-case wait is `(num_retries + 1) * timeout`. |
 | `cache` | `true` | Enable DSPy/LiteLLM response caching. |
@@ -364,7 +406,7 @@ the same name. Inspect the resolved result with `aiagent config show`.
 | `model` | `""` | Effective model name; empty falls back to `default_alias`. |
 | `default_alias` | `default` | Registry alias used when no model is configured. |
 | `default_reasoning` | `nothink` | `think` or `nothink`; the `::<reasoning>` suffix. |
-| `context_tokens` | `null` | Maps to the `@<ctx>` model-string suffix. |
+| `context_tokens` | `null` | Default `@<ctx>` model-string suffix, for aliases that declare no `ctx` of their own. Also settable as `AIAGENT_CONTEXT`. |
 | `registry_overrides` | `{}` | Per-alias `ModelSpec` overrides (see below). |
 | `num_threads` | `4` | Default parallelism for eval/optimize. |
 | `max_bootstrapped_demos` | `4` | BootstrapFewShot: max self-generated demos. |
@@ -372,6 +414,10 @@ the same name. Inspect the resolved result with `aiagent config show`.
 | `max_rounds` | `1` | BootstrapFewShot: bootstrapping rounds. |
 | `skills_dir` | `~/.config/aiagent/skills` | Where user skills are discovered. |
 | `sessions_dir` | `~/.config/aiagent/chat-sessions` | Where chat sessions are stored. |
+
+`AIAGENT_CONTEXT` is an accepted spelling of `AIAGENT_CONTEXT_TOKENS`, but it is
+read one layer lower (alongside the devai-injected vars), so both
+`AIAGENT_CONTEXT_TOKENS` and a TOML `context_tokens` take precedence over it.
 
 ### TOML example
 
@@ -389,7 +435,58 @@ ctx = 8192
 ```
 
 An alias defined under `registry_overrides` becomes selectable as
-`--model fast` on any command.
+`--model fast` on any command. A spec accepts `model`, `ctx`, `reasoning`,
+`provider`, `api_base`, and `api_key`; anything else is rejected with an error
+naming the alias, rather than being dropped without a word.
+
+### Multiple endpoints
+
+One session can address several OpenAI-compatible backends at once. This matters
+on a router where the port picks the backend — Ollama on `:11434`, vLLM on
+`:11435`, SGLang on `:11436` — since otherwise changing backend means quitting
+and relaunching.
+
+**Pin an alias to an endpoint** with `api_base` (and `api_key`, if that endpoint
+needs a different one). An alias that sets neither uses the global `api_base` /
+`api_key`, so nothing changes for a single-endpoint setup:
+
+```toml
+[registry_overrides.qwen-vllm]
+model    = "Qwen3.5-9B-NVFP4"
+ctx      = 262144
+api_base = "http://devai-router:11435/v1"
+
+[registry_overrides.gpt-oss-sglang]
+model    = "gpt-oss-20b"
+ctx      = 131072
+api_base = "http://devai-router:11436/v1"
+```
+
+`aiagent run <skill> --model qwen-vllm` now goes to `:11435` and
+`--model gpt-oss-sglang` to `:11436`, in the same session.
+
+**Discover across endpoints** by listing the extras in `discover_endpoints`.
+`api_base` is always probed first, so the list is purely additive:
+
+```toml
+discover_endpoints = [
+  "http://devai-router:11435/v1",
+  "http://devai-router:11436/v1",
+]
+```
+
+Via the environment, `AIAGENT_DISCOVER_ENDPOINTS` accepts either a JSON array or
+a comma-separated list:
+
+```bash
+export AIAGENT_DISCOVER_ENDPOINTS='["http://devai-router:11435/v1","http://devai-router:11436/v1"]'
+export AIAGENT_DISCOVER_ENDPOINTS='http://devai-router:11435/v1,http://devai-router:11436/v1'
+```
+
+`models list` and `doctor` then report every endpoint. An unreachable one is a
+warning against that endpoint rather than a fatal error, so a partially-up stack
+still lists what it can. Discovery only reports. To send work to a model you find
+this way, give it an alias with the matching `api_base`.
 
 ---
 
@@ -408,6 +505,12 @@ openai/<model>::<reasoning>[@<ctx>]
 - `@<ctx>` is the optional context-window suffix. It must be the **outermost /
   last** token, because the router parses right-to-left; a `@<ctx>` baked into a
   model name is peeled off and re-emitted last so it never lands mid-name.
+
+**Context precedence** is the alias's own `ctx`, then the global
+`context_tokens`, then a `@<ctx>` baked into the model name. The global is a
+default for aliases that state no preference — an alias declaring `ctx = 32768`
+keeps it even when `AIAGENT_CONTEXT=65536` is set, because backends behind
+different endpoints legitimately top out at different context windows.
 
 **Aliases vs. raw names.** `--model` (and the `model` setting) accepts either a
 registry alias or a raw model name. Anything not found in the registry is treated

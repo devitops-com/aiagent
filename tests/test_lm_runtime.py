@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 import dspy
+import pytest
 
 from aiagent.cli._runtime import configure_lm, prediction_to_dict
 from aiagent.config import load_settings
@@ -37,6 +40,37 @@ def test_runtime_configure_lm_default() -> None:
 def test_runtime_configure_lm_with_model() -> None:
     configure_lm(load_settings(), "llama3.2:3b")
     assert dspy.settings.lm.model == "openai/llama3.2:3b::nothink"
+
+
+def test_build_lm_uses_per_alias_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An alias carrying its own api_base/api_key is called at that endpoint,
+    # so one session can reach several backends (issue #11).
+    monkeypatch.setenv(
+        "AIAGENT_REGISTRY_OVERRIDES",
+        json.dumps(
+            {
+                "vllm": {
+                    "model": "Qwen3.5-9B-NVFP4",
+                    "api_base": "http://devai-router:11435/v1",
+                    "api_key": "alias-key",
+                }
+            }
+        ),
+    )
+    lm = build_lm("vllm", settings=load_settings())
+    assert lm.model == "openai/Qwen3.5-9B-NVFP4::nothink"
+    assert lm.kwargs["api_base"] == "http://devai-router:11435/v1"
+    assert lm.kwargs["api_key"] == "alias-key"
+
+
+def test_build_lm_falls_back_to_global_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIAGENT_API_BASE", "http://devai-router:11434/v1")
+    monkeypatch.setenv(
+        "AIAGENT_REGISTRY_OVERRIDES", json.dumps({"plain": {"model": "x:1b"}})
+    )
+    lm = build_lm("plain", settings=load_settings())
+    assert lm.kwargs["api_base"] == "http://devai-router:11434/v1"
+    assert lm.kwargs["api_key"] == "local"
 
 
 def test_prediction_to_dict_fallback() -> None:
