@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-14
+
 ### Changed
 - **Python 3.14.** The pinned dev / CI / bundled-interpreter version moves from
   3.13 to 3.14 (`.python-version`, with `requires-python` and the trove
