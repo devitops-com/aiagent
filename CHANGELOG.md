@@ -41,7 +41,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   venv silently kept a pin the target Python rejects — surfacing only later as a
   `ResolutionImpossible` during `make package`.
 
+### Security
+- **pypdf floor raised to `>=6.16.1`** (lock moves 6.14.2 -> 6.18.1). Every
+  earlier release carries resource-exhaustion advisories reachable from ordinary
+  text extraction — PYSEC-2026-3655/3656 (crafted `/ToUnicode` entries and font
+  widths), 3910/3911 (deeply nested outlines, re-used XForm objects), 3912
+  (`read_until_whitespace`) and 3913 (an infinite loop in
+  `TreeObject.insert_child`). The `sentiment` skill extracts text from PDFs
+  fetched over URLs, so that input is attacker-controlled and these were
+  genuinely reachable. The floor, not just the pin, is raised so a plain
+  `pip install aiagent` cannot resolve back onto a vulnerable pypdf.
+
 ### Fixed
+- **The dependency-audit workflow could never pass** — 68 runs, 68 failures. It
+  installed the project with `pip install -e`, told pip-audit to
+  `--skip-editable`, then passed `--strict`, which fails the audit if dependency
+  collection is skipped for *any* dependency. The skip it was configured to
+  perform was the thing `--strict` treated as fatal, so it reported
+  `aiagent: distribution marked as editable` every time and never once scanned
+  for a CVE. It now audits `requirements.txt` and `requirements-dev.txt`
+  directly — the runtime lock is what the installer actually bundles — which
+  removes the editable case entirely. The workflow had also been auto-disabled
+  by GitHub for repository inactivity and has been re-enabled.
+
+  `diskcache` 5.6.3 (reached via dspy) is suppressed via `--ignore-vuln
+  PYSEC-2026-2447`: pickle deserialization allows code execution by an attacker
+  who can already write to the cache directory, 5.6.3 is the latest release and
+  upstream has published no fix, so there is nothing to upgrade to. Remove the
+  flag when a fixed diskcache ships.
 - **Usage errors printed a traceback instead of help** (Typer 0.27.2): Typer
   moved `Abort` out of `typer._click.exceptions` into `typer.exceptions`
   (fastapi/typer#1942). `cli/app.py` imported `Abort` and `UsageError` from the

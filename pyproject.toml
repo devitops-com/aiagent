@@ -50,7 +50,13 @@ dependencies = [
     "httpx>=0.27",
     # pypdf extracts text from PDF sources for the `sentiment` skill. Pure Python
     # (no C build), so it stays inside the torch-free packaging guards.
-    "pypdf>=5",
+    # Floor is 6.16.1: every release below it carries resource-exhaustion
+    # advisories reachable from ordinary text extraction (PYSEC-2026-3655/3656/
+    # 3910/3911/3912/3913 — crafted font widths, /ToUnicode entries, outlines,
+    # XForm re-use, read_until_whitespace, insert_child). `sentiment` extracts
+    # from URL-fetched PDFs, so that input is attacker-controlled; keep this
+    # floor at or above the newest pypdf advisory fix.
+    "pypdf>=6.16.1",
     # litellm is a dspy transitive dep, but RetryAwareLM references its exception
     # classes directly (status-aware retry, issue #10), so declare it explicitly.
     # Floor is 1.93, the first release whose requires-python admits 3.14 (earlier

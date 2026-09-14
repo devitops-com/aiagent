@@ -21,10 +21,30 @@ jobs:
           python-version-file: .python-version
           cache: pip
 
-      - name: Install package (dev)
-        run: python -m pip install -e ".[dev]"
+      - name: Install pip-audit
+        run: python -m pip install pip-audit
 
-      - name: pip-audit
+      # Audit the LOCK FILES rather than an installed environment.
+      #
+      # requirements.txt is literally the dependency set the installer bundles,
+      # so auditing it is the question we actually care about, and it sidesteps
+      # a contradiction that made this job fail on all 68 of its runs: the
+      # project was installed with `-e`, `--skip-editable` then skipped it, and
+      # `--strict` ("fail if dependency collection fails on any dependency")
+      # turned that skip into a fatal error. The combination could never pass.
+      #
+      # --ignore-vuln PYSEC-2026-2447 (diskcache 5.6.3, reached via dspy):
+      # pickle deserialization allows code execution for an attacker who can
+      # already write to the cache directory. 5.6.3 is the latest release and
+      # upstream has published no fixed version, so there is nothing to upgrade
+      # to; suppressing it keeps the job meaningful for everything else. Drop
+      # this flag as soon as a fixed diskcache ships.
+      - name: pip-audit (runtime lock)
         run: |
-          python -m pip install pip-audit
-          pip-audit --strict --desc --skip-editable
+          pip-audit --strict --desc -r requirements.txt \
+            --ignore-vuln PYSEC-2026-2447
+
+      - name: pip-audit (dev lock)
+        run: |
+          pip-audit --strict --desc -r requirements-dev.txt \
+            --ignore-vuln PYSEC-2026-2447
