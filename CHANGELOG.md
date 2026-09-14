@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **The installer put its bundled Python on your PATH, shadowing the system
+  interpreter.** Every release since the first one linked the bundled
+  interpreter into `$PREFIX/bin` as `python<X.Y>` alongside `aiagent`. With the
+  default prefix that is `~/.local/bin`, which sits ahead of `/usr/bin` for most
+  users, so `python3.14` in any shell resolved to aiagent's private interpreter
+  — sourceless (`.pyc` only), carrying aiagent's own site-packages, and with
+  pip/setuptools stripped by the build. On a host with its own Python 3.14 it
+  silently hijacked it.
+
+  Nothing needed the link: console-script shebangs are rewritten at install time
+  to the bundled interpreter's *absolute* path, so `aiagent` works without it.
+  Only `aiagent` is placed on PATH now; the interpreter stays at
+  `$PREFIX/lib/aiagent/bin/python<X.Y>`.
+
+  Because earlier installers created it, upgrading also **removes** the stale
+  link — but only when it still points into aiagent's own `lib/aiagent`, so a
+  `python<X.Y>` you installed yourself is never touched. The installer says so
+  when it removes one.
+
+  `make package` now asserts that `$PREFIX/bin` contains nothing but `aiagent`,
+  so this cannot regress silently. Anyone on <= 0.3.0 who does not upgrade can
+  clear it by hand: `rm ~/.local/bin/python3.14` (check it points into
+  `~/.local/lib/aiagent/` first).
+
 ## [0.3.0] - 2026-09-14
 
 ### Changed

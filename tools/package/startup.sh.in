@@ -69,13 +69,34 @@ for f in "$LIB"/bin/*; do
   chmod 755 "$tmp"; mv "$tmp" "$f"
 done
 
-ln -sf "$LIB/bin/python$PYVER" "$BINDIR/python$PYVER"
-ln -sf "$LIB/bin/aiagent"      "$BINDIR/aiagent"
+# Only `aiagent` goes on PATH. The bundled interpreter deliberately does NOT:
+# $BINDIR is normally ~/.local/bin, which sits ahead of /usr/bin for most users,
+# so linking it there as python$PYVER shadowed the host's own python$PYVER for
+# every command in the shell — with an interpreter that is sourceless, carries
+# aiagent's site-packages, and has had pip/setuptools stripped. Console scripts
+# do not need the link: their shebangs were rewritten above to $BUNDLE_PY as an
+# absolute path.
+ln -sf "$LIB/bin/aiagent" "$BINDIR/aiagent"
+
+# Installers up to 0.3.0 created that link, so an upgrade has to remove it or
+# the shadowing survives. Only ever remove a symlink that still points into our
+# own $LIB — never a python the user put there.
+stale="$BINDIR/python$PYVER"
+removed_stale=""
+if [ -L "$stale" ]; then
+  case "$(readlink "$stale" 2>/dev/null || true)" in
+    "$LIB"/*) rm -f "$stale" && removed_stale=1 ;;
+  esac
+fi
 
 echo "Installed:"
 echo "  $BINDIR/aiagent      ->  $LIB/bin/aiagent  (Python console script)"
-echo "  $BINDIR/python$PYVER   ->  bundled interpreter"
 echo "  $LIB/  (CPython $PYVER + aiagent + deps, sourceless precompiled)"
+if [ -n "$removed_stale" ]; then
+  echo "Removed:"
+  echo "  $stale  (older installers put the bundled interpreter on PATH,"
+  echo "   where it shadowed the host's own python$PYVER; aiagent never needed it)"
+fi
 case ":${PATH}:" in
   *":$BINDIR:"*) echo "Run: aiagent --help" ;;
   *) echo "Add $BINDIR to PATH:  export PATH=\"$BINDIR:\$PATH\"" ;;

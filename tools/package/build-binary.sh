@@ -231,8 +231,19 @@ AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 # expected rather than reported as MISSING.
 echo "==> Verifying bundled module versions against requirements.txt"
 # shellcheck disable=SC2086 # STRIP_ABSENT is an intentional word-split list
-"$TPREFIX/bin/python${PY_VERSION}" -s "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
+"$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -s "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
     || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; rm -rf "$TPREFIX"; exit 1; }
+
+# $PREFIX/bin must contain ONLY `aiagent`. Installers up to 0.3.0 also linked
+# the bundled interpreter here as python$PY_VERSION, which shadowed the host's
+# own python for anyone with ~/.local/bin ahead of /usr/bin — a sourceless
+# interpreter carrying aiagent's site-packages, with pip/setuptools stripped.
+onpath="$(ls "$TPREFIX/bin")"
+if [ "$onpath" != "$APP" ]; then
+    echo "ERROR: \$PREFIX/bin must expose only '$APP', got:" >&2
+    printf '  %s\n' $onpath >&2
+    exit 1
+fi
 
 "$TPREFIX/bin/$APP" --help >/dev/null
 # (a) An Arguments panel forces make_metavar(ctx) on a positional; a pre-8.2
@@ -282,7 +293,7 @@ reg, _ = load_registry(load_settings())
 for name in ("chat", "extract"):
     build_module(reg.get(name))
 PYEOF
-if ! "$TPREFIX/bin/python${PY_VERSION}" -s "$PROBE"; then
+if ! "$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -s "$PROBE"; then
     echo "ERROR: bundle probe failed (skill load, litellm import, or AWS strip)" >&2
     rm -f "$PROBE"; exit 1
 fi
