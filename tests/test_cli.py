@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 
@@ -12,6 +13,20 @@ from aiagent import __version__
 from aiagent.cli.app import app
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _plain(text: str) -> str:
+    """Help output with ANSI escapes removed.
+
+    Rich colours its output whenever it detects GitHub Actions
+    (``GITHUB_ACTIONS=1``), even though CliRunner's stream is not a terminal, so
+    under CI a help line begins ``\x1b[1m`` rather than its text. Anything
+    asserting on the *structure* of help (line starts, prefixes) has to strip
+    escapes first or it passes locally and fails only in CI.
+    """
+    return _ANSI.sub("", text)
 
 
 @pytest.mark.parametrize("cmd", ["run", "eval", "optimize"])
@@ -33,7 +48,7 @@ def test_arg_command_help_renders_metavar(cmd: str) -> None:
     result = runner.invoke(app, [cmd, "--help"])
     assert result.exit_code == 0
     usage = next(
-        (ln for ln in result.stdout.splitlines() if ln.strip().startswith("Usage:")),
+        (ln for ln in _plain(result.stdout).splitlines() if ln.strip().startswith("Usage:")),
         "",
     )
     assert "skill" in usage.lower(), f"no skill metavar in usage line: {usage!r}"
@@ -104,7 +119,7 @@ def test_usage_error_prints_help_not_traceback(argv: list[str]) -> None:
         capture_output=True,
         text=True,
     )
-    combined = out.stdout + out.stderr
+    combined = _plain(out.stdout + out.stderr)
     assert "Traceback" not in combined, f"usage error dumped a traceback:\n{combined}"
     assert out.returncode == 2, f"expected exit 2, got {out.returncode}:\n{combined}"
     assert "Usage:" in combined, f"help text not printed:\n{combined}"
