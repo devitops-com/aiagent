@@ -6,6 +6,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Python 3.14.** The pinned dev / CI / bundled-interpreter version moves from
+  3.13 to 3.14 (`.python-version`, with `requires-python` and the trove
+  classifier kept in sync). All 85 locked pins were audited against 3.14;
+  litellm was the only incompatible one.
+- **litellm floor raised to `>=1.93`** (was `>=1.64.0`; lock moves 1.90.1 ->
+  1.100.1). 1.93.0 is the first release whose `requires-python` admits 3.14 —
+  everything earlier caps at `<3.14` and cannot be installed at all, which is
+  what broke `make package`. No upper bound: litellm tracks provider APIs and is
+  worth following.
+- **The packaging build now strips the AWS/Bedrock subtree** (boto3, botocore,
+  s3transfer, jmespath, python-dateutil, six) the way it already strips hf_xet.
+  litellm 1.98 promoted boto3 from an extra to a core dependency; aiagent talks
+  to a local devai router and never takes the Bedrock path, and litellm imports
+  boto3 lazily inside those handlers rather than at module scope. That is ~21 MB
+  uncompressed (botocore's per-service JSON is 20 MB of it) for code that never
+  runs. Tracking latest litellm *with* the strip costs +0.9 MB of installer over
+  pinning at 1.97 without it; the installer lands at ~71 MB (from ~63 MB, the
+  rest being the interpreter and litellm bumps).
+
+  The set is exactly what is reachable only through boto3 — urllib3 is
+  deliberately not in it, since requests needs it independently. The strip set
+  is declared once in `build-binary.sh` and feeds both the removal and
+  `verify-versions.py`'s allow-list, so a strip the audit doesn't know about
+  fails the build. The bundle's smoke probe now imports litellm and
+  `RetryAwareLM` with the subtree gone, so a future litellm that imports boto3
+  at module scope fails the build instead of shipping a broken bundle. A
+  pip/uv install of aiagent is unaffected and still gets boto3.
+- **`make lock` now resolves against `.python-version`** (`uv pip compile
+  --python-version`) rather than whichever interpreter happens to be active. uv
+  treats an existing `requirements*.txt` as pins to preserve and does not
+  re-validate them against a changed `requires-python`, so locking from a stale
+  venv silently kept a pin the target Python rejects — surfacing only later as a
+  `ResolutionImpossible` during `make package`.
+
 ### Fixed
 - **Usage errors printed a traceback instead of help** (Typer 0.27.2): Typer
   moved `Abort` out of `typer._click.exceptions` into `typer.exceptions`

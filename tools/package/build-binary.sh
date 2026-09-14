@@ -36,6 +36,13 @@ ZSTD_BIN="$CACHE/zstd-static-$ARCH"
 ZSTD_VERSION="1.5.6"
 ZSTD_SHA256="8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1"
 
+# Distributions the build deliberately removes from the bundle. Named once here
+# so the removal (step 6c) and the version audit's allow-list (step 13) cannot
+# drift apart — a strip the audit doesn't know about fails the build as MISSING.
+#   hf-xet     HuggingFace Hub Xet accelerator; aiagent never hits the Hub.
+#   boto3 ...  the AWS/Bedrock subtree; see step 6c.
+STRIP_ABSENT="hf-xet boto3 botocore jmespath python-dateutil s3transfer six"
+
 VERSION="$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | cut -d'"' -f2)"
 [ -n "$VERSION" ] || { echo "ERROR: cannot read version from pyproject.toml" >&2; exit 1; }
 
@@ -106,6 +113,27 @@ rm -f "$STAGE/python/lib"/libpython*.a
 find "$SP" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 # hf_xet: HuggingFace Hub Xet download accelerator — aiagent never hits the Hub.
 rm -rf "$SP/hf_xet" "$SP"/hf_xet-*.dist-info 2>/dev/null || true
+
+# --- 6c. Strip the AWS/Bedrock subtree ---------------------------------
+# litellm 1.98 promoted boto3 from an extra to a core dependency, for its AWS
+# Bedrock provider. aiagent only ever talks to the local devai router, so that
+# path is never taken, and litellm imports boto3 lazily (inside the Bedrock
+# handlers) rather than at module scope — so the whole subtree is dead weight.
+# It is ~21 MB unpacked, 20 MB of it botocore's per-service JSON.
+#
+# This is exactly the set reachable ONLY through boto3: nothing else in the lock
+# requires any of them (urllib3 is NOT here — requests needs it independently).
+# Note the on-disk names differ from the distribution names: python-dateutil
+# installs `dateutil/`, and six is a bare `six.py` module rather than a package.
+echo "==> Stripping AWS/Bedrock subtree (boto3 + botocore + s3transfer + deps)"
+( cd "$SP" && rm -rf \
+    boto3 botocore jmespath dateutil s3transfer \
+    boto3-*.dist-info botocore-*.dist-info jmespath-*.dist-info \
+    python_dateutil-*.dist-info s3transfer-*.dist-info six-*.dist-info \
+    2>/dev/null || true; rm -f six.py 2>/dev/null || true )
+for leftover in boto3 botocore jmespath dateutil s3transfer six.py; do
+    [ -e "$SP/$leftover" ] && { echo "ERROR: $leftover survived the AWS strip" >&2; exit 1; }
+done
 
 # --- 7. Sanity-check the staged interpreter ----------------------------
 # NB: do NOT `strip` libpython — it corrupts PBS symbol-version tables.
@@ -198,10 +226,12 @@ AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 
 # Version audit: confirm every installed module matches requirements.txt, at both
 # the dist-info metadata AND the imported-code (__version__) level. A build where
-# those disagree — the v0.1.0 defect — fails here instead of shipping. hf-xet is
-# stripped in step 6b, so its absence is expected.
+# those disagree — the v0.1.0 defect — fails here instead of shipping. The
+# distributions stripped in 6b/6c are passed as STRIP_ABSENT so their absence is
+# expected rather than reported as MISSING.
 echo "==> Verifying bundled module versions against requirements.txt"
-"$TPREFIX/bin/python${PY_VERSION}" -s "$ROOT/tools/package/verify-versions.py" "$REQ" hf-xet \
+# shellcheck disable=SC2086 # STRIP_ABSENT is an intentional word-split list
+"$TPREFIX/bin/python${PY_VERSION}" -s "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
     || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; rm -rf "$TPREFIX"; exit 1; }
 
 "$TPREFIX/bin/$APP" --help >/dev/null
@@ -228,17 +258,32 @@ esac
 # exists on disk and asserts if none do. A sourceless tree has no such frame
 # except a real script file — exactly the installed `aiagent` console script's
 # situation — so a stdin-heredoc probe asserts here where a file probe does not.
+#
+# The same probe also proves the step-6c AWS strip is safe. litellm imports
+# boto3 lazily today, so removing it is invisible — but that is litellm's
+# implementation detail, not a guarantee. Importing litellm here (and the dspy
+# LM stack that sits on it) with boto3 absent is what turns "a future litellm
+# imports boto3 at module scope" from a broken bundle into a failed build.
 PROBE="$DIST/.skill-load-probe.py"
 cat > "$PROBE" <<'PYEOF'
+import importlib.util
+
+import litellm  # noqa: F401  - must still import with the AWS subtree stripped
+
 from aiagent.config import load_settings
-from aiagent.skills.registry import load_registry
+from aiagent.llm.retry_lm import RetryAwareLM  # noqa: F401  - keys on litellm exceptions
 from aiagent.skills.loader import build_module
+from aiagent.skills.registry import load_registry
+
+for gone in ("boto3", "botocore", "s3transfer", "jmespath", "dateutil", "six"):
+    assert importlib.util.find_spec(gone) is None, f"{gone} survived the AWS strip"
+
 reg, _ = load_registry(load_settings())
 for name in ("chat", "extract"):
     build_module(reg.get(name))
 PYEOF
-if ! "$TPREFIX/bin/python${PY_VERSION}" -s "$PROBE" >/dev/null; then
-    echo "ERROR: built-in skills fail to load from the sourceless bundle" >&2
+if ! "$TPREFIX/bin/python${PY_VERSION}" -s "$PROBE"; then
+    echo "ERROR: bundle probe failed (skill load, litellm import, or AWS strip)" >&2
     rm -f "$PROBE"; exit 1
 fi
 rm -f "$PROBE"

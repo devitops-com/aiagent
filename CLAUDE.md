@@ -133,16 +133,20 @@ entrypoint (banner + `exec $SHELL`).
 ## Packaging
 
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
-(**linux-x86_64**, ~63 MB): bundled CPython 3.13, **sourceless** (`.pyc` only),
+(**linux-x86_64**, ~71 MB): bundled CPython 3.14, **sourceless** (`.pyc` only),
 **zstd -19** payload decompressed by a **bundled static zstd** (target needs no
 zstd), SHA256 integrity, `-s` hermetic launcher. `make lock` first. Prefix via
 `AIAGENT_PREFIX` (default `~/.local`). Keeps numpy/tokenizers/tiktoken for future
-RAG; drops Tcl/Tk + hf_xet; must stay **torch-free** (build guards enforce it).
+RAG; drops Tcl/Tk, hf_xet, and the **AWS/Bedrock subtree** (boto3 + botocore +
+s3transfer + deps — litellm makes boto3 a core dep since 1.98 but imports it
+lazily, and the local router never takes that path); must stay **torch-free**
+(build guards enforce it). The strip set lives once in `STRIP_ABSENT`
+(`build-binary.sh`) and feeds both the removal and the audit's allow-list.
 Deps install with **`--no-cache-dir`** (always fresh from the configured index).
 The build then installs to a temp prefix and **audits every module against
 `requirements.txt`** at both the dist-info **and** imported-`__version__` level
-(`tools/package/verify-versions.py`, hf-xet allow-listed), failing on any stale
-module — the reproducibility guard for the v0.1.0 metadata/code split.
+(`tools/package/verify-versions.py`, `STRIP_ABSENT` allow-listed), failing on any
+stale module — the reproducibility guard for the v0.1.0 metadata/code split.
 
 **Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
 versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,

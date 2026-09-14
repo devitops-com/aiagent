@@ -23,9 +23,13 @@ dev-install: ## Set up .venv with aiagent + dev dependencies (editable)
 	uv venv --python $(PYTHON_VERSION) .venv 2>/dev/null || true
 	uv pip install --python .venv/bin/python -e ".[dev]"
 
+# --python-version pins the resolution to .python-version instead of whatever
+# interpreter happens to be active. Without it, locking from an older venv
+# silently keeps pins that the target Python rejects (litellm <= 1.92.x caps at
+# python <3.14), and the failure only surfaces later in `make package`.
 lock: ## Regenerate requirements.txt and requirements-dev.txt from pyproject.toml
-	uv pip compile pyproject.toml --generate-hashes -o requirements.txt
-	uv pip compile pyproject.toml --extra dev --generate-hashes -o requirements-dev.txt
+	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --generate-hashes -o requirements.txt
+	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --extra dev --generate-hashes -o requirements-dev.txt
 
 # --- Testing ---
 
