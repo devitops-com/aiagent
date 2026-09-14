@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-14
+
 ### Fixed
 - **The installer put its bundled Python on your PATH, shadowing the system
   interpreter.** Every release since the first one linked the bundled
