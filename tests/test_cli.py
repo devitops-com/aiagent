@@ -21,10 +21,22 @@ def test_arg_command_help_renders_metavar(cmd: str) -> None:
     A pre-Click-8.2 Typer overrides ``make_metavar`` without ``ctx`` and crashes
     the usage/help render for any arg-bearing command; this guards that pairing
     can't regress (issue #1).
+
+    The spelling is Typer's to choose and it changed in 0.27.0 (breaking,
+    fastapi/typer#1863): ``SKILL`` became ``{skill}`` once metavars stopped
+    being upper-cased. Both are fine — assert only that the argument is named
+    in the usage line, and match case-insensitively so either spelling passes.
+    Scoping to that line matters: ``run`` renders the word "SKILL" in an
+    unrelated ``--route`` option description, so a whole-output check passed
+    even when its usage metavar had gone.
     """
     result = runner.invoke(app, [cmd, "--help"])
     assert result.exit_code == 0
-    assert "SKILL" in result.stdout
+    usage = next(
+        (ln for ln in result.stdout.splitlines() if ln.strip().startswith("Usage:")),
+        "",
+    )
+    assert "skill" in usage.lower(), f"no skill metavar in usage line: {usage!r}"
 
 
 def test_version() -> None:
@@ -66,3 +78,33 @@ def test_importing_cli_does_not_import_dspy() -> None:
     code = "import aiagent.cli.app, sys; print('dspy' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize(
+    "argv", [["nosuchcmd"], ["run"]], ids=["unknown-command", "missing-argument"]
+)
+def test_usage_error_prints_help_not_traceback(argv: list[str]) -> None:
+    """A usage error must print help and exit 2 — never dump a traceback.
+
+    ``main()`` catches Typer's *vendored* Click exceptions, which live outside
+    the stdlib ``click`` hierarchy. When Typer 0.27.2 moved ``Abort`` out of
+    ``typer._click.exceptions`` (fastapi/typer#1942) the combined import of
+    ``Abort``+``UsageError`` started raising ``ImportError``, so the vendored
+    ``UsageError`` was dropped from ``_USAGE_ERRORS`` too and every usage error
+    escaped ``main()`` as an unhandled traceback.
+
+    The other CLI tests invoke ``app`` through ``CliRunner`` and so never reach
+    ``main()``'s handlers; this drives the module entry point end to end, which
+    is the only path that exercises them. By design this CLI answers a usage
+    error with the context-appropriate help text rather than a one-line message,
+    so the assertions cover exit code and help — not any error wording.
+    """
+    out = subprocess.run(
+        [sys.executable, "-m", "aiagent.cli.app", *argv],
+        capture_output=True,
+        text=True,
+    )
+    combined = out.stdout + out.stderr
+    assert "Traceback" not in combined, f"usage error dumped a traceback:\n{combined}"
+    assert out.returncode == 2, f"expected exit 2, got {out.returncode}:\n{combined}"
+    assert "Usage:" in combined, f"help text not printed:\n{combined}"

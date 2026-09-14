@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Usage errors printed a traceback instead of help** (Typer 0.27.2): Typer
+  moved `Abort` out of `typer._click.exceptions` into `typer.exceptions`
+  (fastapi/typer#1942). `cli/app.py` imported `Abort` and `UsageError` from the
+  vendored module in a single `try` block, so the relocation raised
+  `ImportError` and dropped the vendored **`UsageError`** from `_USAGE_ERRORS`
+  as collateral — every usage error (unknown command, missing required
+  argument) then escaped `main()` as an unhandled traceback with exit code 0.
+  `Abort` now comes from the public `typer.Abort`, `UsageError` keeps its own
+  guarded import, and a regression test drives the module entry point to assert
+  help + exit 2. This was latent for any fresh install, independent of 3.14.
+
+### Notes
+- Typer 0.27.0 changed metavar rendering (breaking, fastapi/typer#1863):
+  argument metavars are no longer upper-cased and types print as the Python
+  type, so `aiagent run [OPTIONS] SKILL` now reads `aiagent run [OPTIONS]
+  {skill}` and the type column shows `<str>` rather than `TEXT`. Help text
+  only — no CLI surface change. The metavar test was rewritten to check the
+  usage line case-insensitively (it had been passing for `run` on an unrelated
+  `--route` description rather than on the metavar).
+
 ## [0.2.1] - 2026-07-09
 
 ### Fixed

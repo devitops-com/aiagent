@@ -74,15 +74,21 @@ app.command("shell", context_settings=CLI_CONTEXT_SETTINGS)(shell_cmd)
 
 # Typer (>= ~0.16) vendors its own Click, so usage errors raised under
 # ``standalone_mode=False`` are not always subclasses of the stdlib ``click``
-# exceptions. Catch both the stdlib and (when present) the vendored variants.
+# exceptions. Catch both the stdlib and the Typer variants.
+#
+# ``Abort`` is re-exported at the Typer top level across the supported range, so
+# take it from that public name: Typer 0.27.2 moved the class out of
+# ``typer._click.exceptions`` into ``typer.exceptions`` (fastapi/typer#1942), and
+# a deep import of it silently degraded every usage error into a traceback.
+# ``UsageError`` is not top-level exported and stays in the vendored Click
+# module, so it keeps a guarded import — kept separate precisely so one class
+# moving can never again take the other down with it.
 _USAGE_ERRORS: tuple[type[BaseException], ...] = (click.exceptions.UsageError,)
-_ABORT_ERRORS: tuple[type[BaseException], ...] = (click.exceptions.Abort,)
+_ABORT_ERRORS: tuple[type[BaseException], ...] = (click.exceptions.Abort, typer.Abort)
 try:  # pragma: no cover - exercised only on Typer builds that vendor Click
-    from typer._click.exceptions import Abort as _TyperAbort
     from typer._click.exceptions import UsageError as _TyperUsageError
 
     _USAGE_ERRORS = (*_USAGE_ERRORS, _TyperUsageError)
-    _ABORT_ERRORS = (*_ABORT_ERRORS, _TyperAbort)
 except ImportError:  # pragma: no cover - older Typer uses stdlib Click
     pass
 
