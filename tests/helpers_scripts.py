@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+VERSION = PYPROJECT["project"]["version"]
+INSTALL_SH = ROOT / "install.sh"
 SYSTEM_PATH = "/usr/bin:/bin"
 SCRIPT_TIMEOUT_S = 60.0
+
+
+def write_program(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 def run_script(

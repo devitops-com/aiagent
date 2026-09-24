@@ -20,9 +20,14 @@ curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/inst
 Installs to `~/.local` by default. Override the prefix, or pin a version, via env:
 
 ```bash
-curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_PREFIX=/usr/local sh
+curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | sudo AIAGENT_PREFIX=/usr/local sh
 curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_VERSION=v0.1.0 sh
 ```
+
+The installed files belong to whoever runs the installer (root for a system
+install), and every user can read and run them. The installer unpacks under
+`$TMPDIR`, by default `/var/tmp` (never `/tmp`), and also works where that
+directory is mounted `noexec`.
 
 Then, with a reachable router, try these two:
 

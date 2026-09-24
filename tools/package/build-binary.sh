@@ -7,6 +7,7 @@
 # The heavy tree is zstd-compressed and decompressed at install time by a BUNDLED
 # static zstd, so target hosts need neither Python nor zstd. `.py` sources are
 # dropped (sourceless `.pyc` only). makeself provides SHA256 integrity. x86-64.
+# The payload is owned by root:root with modes u+rwX,go+rX,go-w.
 #
 # Build deps: uv, makeself, curl, gcc/make (to build the static zstd once).
 # Run `make lock` first (produces requirements.txt for the constraints step).
@@ -47,6 +48,15 @@ VERSION="$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | cut -d'"' -f2)"
 [ -n "$VERSION" ] || { echo "ERROR: cannot read version from pyproject.toml" >&2; exit 1; }
 
 command -v makeself >/dev/null || { echo "ERROR: makeself not installed (apt-get install makeself)" >&2; exit 1; }
+# makeself's own header extracts to ${TMPDIR:=/tmp}. Build from a copy defaulting to
+# /var/tmp (step 1), so running aiagent-install.sh directly never unpacks into /tmp
+# (often a small RAM tmpfs) either — install.sh already defaults TMPDIR to /var/tmp.
+MAKESELF_HEADER=""
+for h in "$(dirname "$(readlink -f "$(command -v makeself)")")/makeself-header.sh" \
+         /usr/share/makeself/makeself-header.sh /usr/local/share/makeself/makeself-header.sh; do
+    if [ -f "$h" ]; then MAKESELF_HEADER="$h"; break; fi
+done
+[ -n "$MAKESELF_HEADER" ] || { echo "ERROR: cannot find makeself-header.sh" >&2; exit 1; }
 [ -f "$REQ" ] || { echo "ERROR: $REQ missing — run 'make lock' first" >&2; exit 1; }
 if grep -qiE '^(torch|nvidia-)' "$REQ"; then
     echo "ERROR: torch/nvidia-* in requirements.txt; aiagent must stay torch-free" >&2; exit 1
@@ -57,6 +67,12 @@ echo "==> $APP $VERSION -> makeself installer (CPython $PY_VERSION, sourceless, 
 # --- 1. Clean ------------------------------------------------------------
 rm -rf "$STAGE" "$MKDIR" "$CONSTRAINTS" build src/*.egg-info
 mkdir -p "$STAGE" "$MKDIR" "$CACHE"
+HEADER="$STAGE/makeself-header.sh"   # beside the payload dirs, not in the payload
+# shellcheck disable=SC2016  # the ${TMPDIR:=...} text is matched and written literally
+sed 's|^TMPROOT=\\${TMPDIR:=/tmp}$|TMPROOT=\\${TMPDIR:=/var/tmp}|' "$MAKESELF_HEADER" > "$HEADER"
+# shellcheck disable=SC2016
+grep -qxF 'TMPROOT=\${TMPDIR:=/var/tmp}' "$HEADER" \
+    || { echo "ERROR: $MAKESELF_HEADER: no 'TMPROOT=\${TMPDIR:=/tmp}' line to patch" >&2; exit 1; }
 
 # --- 2. Build the aiagent wheel -----------------------------------------
 echo "==> Building $APP wheel"
@@ -137,7 +153,7 @@ done
 
 # --- 7. Sanity-check the staged interpreter ----------------------------
 # NB: do NOT `strip` libpython — it corrupts PBS symbol-version tables.
-"$PY" -c "import sqlite3, ssl, ctypes" \
+"$PY" -I -c "import sqlite3, ssl, ctypes" \
     || { echo "ERROR: staged interpreter is not functional" >&2; exit 1; }
 
 # --- 8. Precompile EVERYTHING (unchecked-hash, relative paths) ----------
@@ -146,7 +162,7 @@ echo "==> Precompiling all modules"
 
 # --- 8b. Drop .py sources: relocate to sourceless .pyc, delete .py ------
 echo "==> Dropping .py sources (sourceless .pyc)"
-"$PY" -s - "$STAGE/python" "$PY_NODOT" <<'PYEOF'
+"$PY" -I - "$STAGE/python" "$PY_NODOT" <<'PYEOF'
 import os, sys
 root, tag = sys.argv[1], sys.argv[2]
 suffix = f".cpython-{tag}.pyc"
@@ -169,7 +185,7 @@ for dp, _dn, fn in os.walk(root, topdown=False):
 PYEOF
 
 # --- 8c. Sanity on the sourceless tree ---------------------------------
-"$PY" -s -c "import aiagent, dspy" \
+"$PY" -I -c "import aiagent, dspy" \
     || { echo "ERROR: sourceless bundle not importable" >&2; exit 1; }
 
 # --- 9. Obtain a static zstd (cached across builds) --------------------
@@ -195,7 +211,15 @@ chmod +x "$MKDIR/zstd"
 mkdir -p "$STAGE/doc"
 cp -p README.md LICENSE CHANGELOG.md "$STAGE/doc/" 2>/dev/null || true
 echo "==> Compressing payload (zstd -19 -T0)"
-tar -C "$STAGE" -cf - python doc | "$MKDIR/zstd" -19 -T0 -q -o "$MKDIR/bundle.tar.zst"
+# root:root and no group/other write bits: tar run as root on the target restores both,
+# and the installer must not hand the tree to whichever local account has the build
+# user's uid (see also startup.sh.in).
+tar --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' \
+    -C "$STAGE" -cf - python doc | "$MKDIR/zstd" -19 -T0 -q -o "$MKDIR/bundle.tar.zst"
+foreign="$("$MKDIR/zstd" -dc "$MKDIR/bundle.tar.zst" | tar --numeric-owner -tvf - \
+    | awk '$2 != "0/0" || substr($1, 6, 1) == "w" || substr($1, 9, 1) == "w"')"
+[ -z "$foreign" ] || { echo "ERROR: payload entries not root-owned or group/other-writable:" >&2
+                       printf '%s\n' "$foreign" | sed 5q >&2; exit 1; }
 
 # --- 11. Generate the makeself startup script (baked-in version/py) ----
 {
@@ -208,12 +232,19 @@ chmod +x "$MKDIR/startup.sh"
 
 # --- 12. Assemble the self-extracting installer with makeself ----------
 # --nox11: run the startup script inline (no xterm). --nocomp: the payload is
-# already zstd-compressed. --sha256: integrity check on extraction.
+# already zstd-compressed. --sha256: integrity check on extraction. --header: the
+# /var/tmp-defaulting copy made in step 1. `sh ./startup.sh`, not ./startup.sh:
+# makeself's temp dir may be mounted noexec (CIS-hardened /tmp and /var/tmp).
 echo "==> Assembling makeself installer"
 rm -f "$OUT"
-makeself --nox11 --nocomp --sha256 --tar-quietly \
-    "$MKDIR" "$OUT" "aiagent $VERSION installer" ./startup.sh >/dev/null
+chmod -R u+rwX,go+rX,go-w "$MKDIR"   # like the payload: nobody else may write what root runs
+makeself --nox11 --nocomp --sha256 --tar-quietly --header "$HEADER" \
+    --tar-extra "--owner=0 --group=0 --numeric-owner" \
+    "$MKDIR" "$OUT" "aiagent $VERSION installer" sh ./startup.sh >/dev/null
 rm -rf "$STAGE" "$MKDIR"
+# shellcheck disable=SC2016
+[ "$(grep -m1 -a '^TMPROOT=' "$OUT")" = 'TMPROOT=${TMPDIR:=/var/tmp}' ] \
+    || { echo "ERROR: $OUT does not default its extraction dir to /var/tmp" >&2; exit 1; }
 
 # --- 13. Smoke test: install to a temp prefix + run --------------------
 # Exercises the two failure modes that shipped in v0.1.0:
@@ -231,7 +262,7 @@ AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 # expected rather than reported as MISSING.
 echo "==> Verifying bundled module versions against requirements.txt"
 # shellcheck disable=SC2086 # STRIP_ABSENT is an intentional word-split list
-"$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -s "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
+"$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -I "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
     || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; rm -rf "$TPREFIX"; exit 1; }
 
 # $PREFIX/bin must contain ONLY `aiagent`. Installers up to 0.3.0 also linked
@@ -246,6 +277,28 @@ if [ "$onpath" != "$APP" ]; then
 fi
 
 "$TPREFIX/bin/$APP" --help >/dev/null
+version_out="$("$TPREFIX/bin/$APP" version)"
+[ "$version_out" = "$VERSION" ] \
+    || { echo "ERROR: '$APP version' printed '$version_out', want '$VERSION'" >&2; exit 1; }
+
+# Hermetic (-I): a host PYTHONPATH with its own click, a module in the cwd reached
+# through an empty PYTHONPATH entry, and a stray PYTHONHOME must all be ignored.
+HOSTILE="$DIST/.hostile"
+rm -rf "$HOSTILE"; mkdir -p "$HOSTILE/click"
+echo 'raise ImportError("a host click shadowed the bundled one")' > "$HOSTILE/click/__init__.py"
+echo 'raise ImportError("a module from the cwd was imported")' > "$HOSTILE/typer.py"
+hostile_out="$(cd "$HOSTILE" && PYTHONPATH="$HOSTILE:" PYTHONHOME=/nonexistent \
+    "$TPREFIX/bin/$APP" version 2>&1)" \
+    || { echo "ERROR: '$APP version' fails with PYTHONPATH/PYTHONHOME set: $hostile_out" >&2; exit 1; }
+[ "$hostile_out" = "$VERSION" ] \
+    || { echo "ERROR: with PYTHONPATH/PYTHONHOME set '$APP version' printed '$hostile_out'" >&2; exit 1; }
+rm -rf "$HOSTILE"
+
+# Usable by every user, writable only by the installing one.
+bad_modes="$(find "$TPREFIX" ! -type l \( -perm /022 -o ! -perm -004 -o \( -type d ! -perm -005 \) \))"
+[ -z "$bad_modes" ] || { echo "ERROR: installed files with wrong modes:" >&2
+                         printf '%s\n' "$bad_modes" | sed 5q >&2; exit 1; }
+
 # (a) An Arguments panel forces make_metavar(ctx) on a positional; a pre-8.2
 # Typer/Click pair crashes the render here. Capture the output (do NOT pipe into
 # grep -q: under `set -o pipefail` its early exit SIGPIPEs the producer and
@@ -293,14 +346,14 @@ reg, _ = load_registry(load_settings())
 for name in ("chat", "extract"):
     build_module(reg.get(name))
 PYEOF
-if ! "$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -s "$PROBE"; then
+if ! "$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -I "$PROBE"; then
     echo "ERROR: bundle probe failed (skill load, litellm import, or AWS strip)" >&2
     rm -f "$PROBE"; exit 1
 fi
 rm -f "$PROBE"
 "$TPREFIX/bin/$APP" doctor --offline >/dev/null
 rm -rf "$TPREFIX"
-echo "    ok (--help, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
+echo "    ok (--help, version, hermetic, modes, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
 
 # --- 14. Report --------------------------------------------------------
 SIZE="$(du -h "$OUT" | cut -f1)"
@@ -309,6 +362,7 @@ echo "Built installer:"
 echo "  $OUT  ($SIZE)"
 echo ""
 echo "Install on any linux-x86_64 host (no Python, no zstd required):"
-echo "  ./aiagent-install.sh                             # -> ~/.local"
-echo "  AIAGENT_PREFIX=/usr/local ./aiagent-install.sh   # system / devai image install"
+echo "  sh ./aiagent-install.sh                                  # -> ~/.local"
+echo "  sh ./aiagent-install.sh -- --prefix DIR                  # or AIAGENT_PREFIX=DIR"
+echo "  sudo AIAGENT_PREFIX=/usr/local sh ./aiagent-install.sh   # system / devai image install"
 echo "  aiagent --help"

@@ -136,10 +136,13 @@ entrypoint (banner + `exec $SHELL`).
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
 (**linux-x86_64**, ~71 MB): bundled CPython 3.14, **sourceless** (`.pyc` only),
 **zstd -19** payload decompressed by a **bundled static zstd** (target needs no
-zstd), SHA256 integrity, `-s` hermetic launcher. `make lock` first. Prefix via
-`AIAGENT_PREFIX` (default `~/.local`). Keeps numpy/tokenizers/tiktoken for future
-RAG; drops Tcl/Tk, hf_xet, and the **AWS/Bedrock subtree** (boto3 + botocore +
-s3transfer + deps — litellm makes boto3 a core dep since 1.98 but imports it
+zstd), SHA256 integrity, `-I` (isolated) launcher — ignores `PYTHONPATH`,
+`PYTHONHOME`, user site and cwd, so a user skill's `<module>:<attr>` metric can't
+come from `PYTHONPATH`. `make lock` first. Prefix via `AIAGENT_PREFIX` or
+`-- --prefix DIR` (default `~/.local`; `--target` is makeself's own option and is
+refused). Keeps numpy/tokenizers/tiktoken for future RAG; drops Tcl/Tk, hf_xet,
+and the **AWS/Bedrock subtree** (boto3 + botocore + s3transfer + deps — litellm
+makes boto3 a core dep since 1.98 but imports it
 lazily, and the local router never takes that path); must stay **torch-free**
 (build guards enforce it). The strip set lives once in `STRIP_ABSENT`
 (`build-binary.sh`) and feeds both the removal and the audit's allow-list.
@@ -149,6 +152,17 @@ The build then installs to a temp prefix and **audits every module against
 (`tools/package/verify-versions.py`, `STRIP_ABSENT` allow-listed), failing on any
 stale module — the reproducibility guard for the v0.1.0 metadata/code split.
 
+**Installer invariants** (`tests/test_installer.py`; the smoke test re-checks the
+built one): payload `root:root`, no group/other write (build gate), extracted with
+`--no-same-owner` under `umask 022` so a root install is root-owned and
+world-readable; relative prefix → `$USER_PWD`, quoted `~` → `$HOME`, whitespace or
+over-long (127-byte shebang) prefix refused **before** unpacking; the staged
+interpreter must run (`-I -c 'import aiagent'`) before an existing install is
+replaced; makeself runs `sh ./startup.sh` and zstd runs from the stage, so a
+noexec `$TMPDIR` works; the extraction dir defaults to `/var/tmp` (patched
+makeself header), never `/tmp`. Smoke test also checks `aiagent version` ==
+pyproject version, with a hostile `PYTHONPATH`/`PYTHONHOME` too, and file modes.
+
 **Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
 versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,
 clean tree, in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
@@ -156,6 +170,8 @@ refused) → rebuild installer → commit → tag → atomic push → `gh releas
 with **two** assets: `aiagent-install.sh` + `install.sh`. `install.sh` is a POSIX
 **bootstrap** — a makeself archive can't be piped to `sh` (it seeks within `$0`),
 so it downloads the installer to a temp file (auto-removed via `trap`) and runs it.
+It downloads HTTPS-only with curl (`--proto '=https' --tlsv1.2`, redirects included;
+the wget fallback cannot enforce that) and stages under `$TMPDIR` (default `/var/tmp`).
 Repo `devitops-com/aiagent` is **public**; uv-style install:
 `curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
 `AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`.

@@ -56,6 +56,13 @@ jobs:
       - name: Install package (dev)
         run: python -m pip install -e ".[dev]"
 
+      # The installer tests run startup.sh as root and on a noexec mount inside
+      # unprivileged user namespaces, which Ubuntu 24.04 runners restrict through
+      # AppArmor (kernel.apparmor_restrict_unprivileged_userns=1); without this
+      # those tests skip. Lift the restriction on this throwaway VM only.
+      - name: Allow unprivileged user namespaces (installer tests)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Run tests under coverage
         run: pytest tests/ --cov=aiagent --cov-branch -p no:cacheprovider
 
