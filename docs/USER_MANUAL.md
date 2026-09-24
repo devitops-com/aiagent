@@ -634,7 +634,10 @@ pin bump): re-run `make dev-install`, which recreates `.venv`. A patch bump of
 published before it. Tests are hermetic by default: LLM-driven CLI
 commands use `dspy.utils.DummyLM`, `doctor`/`models` use an httpx mock, and an
 autouse fixture neutralizes env/TOML/skills-dir so nothing leaks in. Live devai
-tests (`pytest -m live`) must run inside the `devai-net` network.
+tests (`pytest -m live`) must run inside the `devai-net` network. The suite keeps
+every temp file under `/var/tmp` (never `/tmp`) and removes it when the run ends,
+pass or fail (`tests/tmp_hygiene.py`), so a plain `pytest` or `make test` leaves
+nothing behind.
 
 ---
 

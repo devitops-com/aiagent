@@ -3,6 +3,8 @@
 ``clean_env`` (autouse) makes settings resolution hermetic: it clears every env
 var aiagent reads and points the TOML source at a non-existent file, so tests
 never pick up the developer's real shell env or ``~/.config/aiagent/config.toml``.
+Its ``tmp_path``, like every other temp file of the run, lives under /var/tmp and is removed
+after the run (``tmp_hygiene``).
 """
 
 from __future__ import annotations
@@ -10,6 +12,8 @@ from __future__ import annotations
 import pytest
 
 from aiagent.config import Settings
+
+pytest_plugins = ["tmp_hygiene"]  # temp files under /var/tmp, removed after the run
 
 _VARS = [
     "AIAGENT_API_BASE",

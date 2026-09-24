@@ -236,6 +236,14 @@ Hermetic by default. LLM-driven CLI commands use **`dspy.utils.DummyLM`**
 `tests/conftest.py::clean_env` (autouse) neutralizes env/TOML/skills-dir. Live
 devai tests: `pytest -m live` (run inside `devai-net`).
 
+**Test temp files: never `/tmp`.** `tests/tmp_hygiene.py` (registered in
+`conftest.py`, tested in `tests/test_tmp_hygiene.py`) gives each run a private
+`/var/tmp/aiagent-pytest-<pid>-<random>/` for `tmp_path` (which `clean_env` takes for
+every test) and for `TMPDIR` (inherited by the scripts, git and installers the tests
+run), removes it when the session ends, pass or fail, and sweeps the directories of
+killed runs at the next start. So plain `pytest` / `make test` is enough: no
+`--basetemp`, no `rm`.
+
 ## Scope (MVP) / not yet
 
 In: extraction demo, sentiment analysis (files/URLs/text via the `ingest` layer),
