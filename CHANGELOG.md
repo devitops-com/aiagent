@@ -48,6 +48,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/dev/tty: No such device or address`.
 
 ### Security
+- **The build backend is hash-pinned.** `make lock` also writes
+  `requirements-build.txt` (hatchling and its dependencies, from `[build-system]`),
+  and `make package` builds the aiagent wheel with exactly those, hash-checked,
+  instead of whatever the index served at build time.
 - **A root or system install is owned by root and not group-writable.** The
   payload carried the build user's uid/gid and group-writable modes, which tar
   restores when run as root, so on an image install (`AIAGENT_PREFIX=/usr/local`)

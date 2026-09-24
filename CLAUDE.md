@@ -94,7 +94,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 ## Commands
 
 `make dev-install` · `make check` (ruff + mypy --strict) · `make test` (hermetic) ·
-`make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging; keeps existing pins —
+`make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging; writes the hashed
+`requirements.txt`, `requirements-dev.txt` and `requirements-build.txt`; keeps existing pins —
 `LOCK_ARGS='--upgrade-package X'` moves one) · `make package` ·
 `make release` (tag + publish GitHub release; version from pyproject).
 
@@ -147,6 +148,8 @@ lazily, and the local router never takes that path); must stay **torch-free**
 (build guards enforce it). The strip set lives once in `STRIP_ABSENT`
 (`build-binary.sh`) and feeds both the removal and the audit's allow-list.
 Deps install with **`--no-cache-dir`** (always fresh from the configured index).
+The aiagent wheel is built by the hash-pinned backend of `requirements-build.txt`
+(`uv build --build-constraints … --require-hashes`), never one freshly resolved.
 The build then installs to a temp prefix and **audits every module against
 `requirements.txt`** at both the dist-info **and** imported-`__version__` level
 (`tools/package/verify-versions.py`, `STRIP_ABSENT` allow-listed), failing on any
