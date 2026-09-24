@@ -6,6 +6,8 @@ tools/package/build-binary.sh, run with fake tools, builds from those locks.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import platform
 import re
 import shutil
@@ -189,10 +191,12 @@ def test_make_dev_install_stops_with_uvs_reason_when_it_cannot_make_the_venv(
 BUILD_BINARY = ROOT / "tools" / "package" / "build-binary.sh"
 CHECK_PYTHON = ROOT / "tools" / "package" / "check-python.sh"
 STARTUP_IN = ROOT / "tools" / "package" / "startup.sh.in"
+CHECK_HOST_PATHS = ROOT / "tools" / "package" / "check-host-paths.py"
 WHEEL = f"aiagent-{VERSION}-py3-none-any.whl"
 MINOR = PINNED_PYTHON.rsplit(".", 1)[0]
 PIP_CHECK_OK = 'echo "No broken requirements found."'
 ZSTD_VERSION = "1.5.6"
+SYSCONFIGDATA = "_sysconfigdata__linux_x86_64-linux-gnu.py"
 UV_CANNOT_DOWNLOAD = f"error: No download found for request: cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
 
 
@@ -217,8 +221,10 @@ def fake_build_project(
       `uv python install` and finds a fake uv-managed CPython (with the shared libpython and
       pkgconfig that python-build-standalone ships)
     - that CPython's python (python.log) prints its prefix, reports ``staged_version`` and fakes
-      pip (``pip_check`` is the shell code for `pip check`; pip is gone once the build strips it);
-      everything else goes to the interpreter running the tests
+      pip (``pip_check`` is the shell code for `pip check`; pip is gone once the build strips it;
+      installing the lock copies ``tmp_path/locked`` into site-packages, if it exists);
+      everything else goes to the interpreter running the tests. Its sysconfig data names its
+      uv install path, as uv writes it.
     - curl fails, so a build without a usable cached zstd stops there
     - the cached zstd reports ``zstd_version`` and stores and cats instead of compressing;
       readelf (else the real one) sees it as a static ELF, or a dynamic one if ``zstd_dynamic``
@@ -229,13 +235,14 @@ def fake_build_project(
     """
     project = tmp_path / "project"
     (project / "tools" / "package").mkdir(parents=True)
-    for script in (BUILD_BINARY, CHECK_PYTHON, STARTUP_IN):
+    for script in (BUILD_BINARY, CHECK_PYTHON, STARTUP_IN, CHECK_HOST_PATHS):
         shutil.copy2(script, project / "tools" / "package" / script.name)
     shutil.copy2(ROOT / ".python-version", project / ".python-version")
     (project / "pyproject.toml").write_text(f'[project]\nname = "aiagent"\nversion = "{VERSION}"\n')
     (project / "requirements.txt").write_text("dspy==3.2.1\n")
     (project / "requirements-build.txt").write_text("hatchling==1.32.4\n")
     python = managed_python(tmp_path)
+    locked = tmp_path / "locked"
     write_program(
         python / "bin" / f"python{MINOR}",
         f"""echo "$*" >> "{tmp_path / "python.log"}"
@@ -250,6 +257,7 @@ case "$*" in
         case "$*" in
             "-m pip check") {pip_check} ;;
             *.whl) printf '#!%s\\nimport aiagent\\n' "$0" > "$here/bin/aiagent" ;;
+            *" -r "*) [ ! -d "{locked}" ] || cp -R "{locked}/." "$here/lib/python{MINOR}/site-packages/" ;;
         esac ;;
     *"import aiagent, dspy"*) ;;
     *) exec "{sys.executable}" "$@" ;;
@@ -257,6 +265,9 @@ esac
 """,
     )
     (python / "lib" / f"python{MINOR}" / "site-packages" / "pip").mkdir(parents=True)
+    (python / "lib" / f"python{MINOR}" / SYSCONFIGDATA).write_text(
+        f"build_time_vars = {{'prefix': '{python}', 'LIBDIR': '{python}/lib'}}\n"
+    )
     (python / "lib" / f"libpython{MINOR}.so.1.0").write_bytes(minimal_elf("libc.so.6"))
     (python / "lib" / f"libpython{MINOR}.so").symlink_to(f"libpython{MINOR}.so.1.0")
     (python / "lib" / "libpython3.so").write_bytes(minimal_elf(f"libpython{MINOR}.so.1.0"))
@@ -660,3 +671,85 @@ def test_a_module_that_does_not_compile_fails_the_build_with_the_compiler_error(
     assert "broken.py" in result.stdout
     assert "SyntaxError" in result.stdout
     assert "==> Dropping .py sources" not in result.stdout
+
+
+def staged(project: Path, *parts: str) -> Path:
+    """A path in the build's staged interpreter tree (dist/.build/python)."""
+    return project.joinpath("dist", ".build", "python", *parts)
+
+
+def test_the_payload_names_no_build_host_path_in_sysconfig_data_or_the_launcher(
+    tmp_path: Path,
+) -> None:
+    """uv rewrote the sysconfig data to its install path in the maintainer's home, and pip stamped
+    the launcher with the staging path: back to python-build-standalone's neutral /install (the
+    installer rewrites the launcher's shebang to the bundled interpreter anyway)."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    with tarfile.open(tmp_path / "mkself" / "bundle.tar.zst") as tar:
+        sysconfig = tar.extractfile(f"python/lib/python{MINOR}/{SYSCONFIGDATA}c")
+        launcher = tar.extractfile("python/bin/aiagent")
+        assert sysconfig is not None and launcher is not None
+        sysconfig_data, launcher_data = sysconfig.read(), launcher.read()
+    assert b"/install/lib" in sysconfig_data
+    assert str(managed_python(tmp_path)).encode() not in sysconfig_data
+    assert launcher_data.splitlines()[0] == f"#!/install/bin/python{MINOR}".encode()
+    assert "ok: no build-host paths" in result.stdout
+
+
+@pytest.mark.parametrize("where", ["cpython", "checkout", "home"])
+def test_a_build_host_path_in_the_payload_fails_the_build(where: str, tmp_path: Path) -> None:
+    """The uv-managed CPython the build copied, the checkout and $HOME/ must not ship."""
+    project, env = fake_build_project(tmp_path)
+    pattern = {
+        "cpython": str(managed_python(tmp_path)),
+        "checkout": f"{project}/",
+        "home": f"{env['HOME']}/",
+    }[where]
+    leak = managed_python(tmp_path) / "lib" / f"python{MINOR}" / "leak.txt"
+    leak.write_text(f"built at {pattern}src\n")
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    lines = result.stderr.splitlines()
+    assert lines[lines.index("ERROR: build-host paths in the payload:") + 1 :] == [
+        f"  {staged(project, 'lib', f'python{MINOR}', 'leak.txt')}: {pattern}"
+    ]
+
+
+def test_upstream_files_verbatim_from_a_pinned_wheel_pass_the_gate(tmp_path: Path) -> None:
+    """As on a GitHub runner, where $HOME is /home/runner: pydantic_core's SBOM (and four more
+    upstream files) name their own project's CI checkout under /home/runner/work/."""
+    project, env = fake_build_project(tmp_path)
+    (project / "requirements.txt").write_text("dspy==3.2.1\npydantic-core==2.46.4\n")
+    sbom = "pydantic_core-2.46.4.dist-info/sboms/pydantic-core.cyclonedx.json"
+    data = f'{{"bom-ref": "path+file://{env["HOME"]}/work/pydantic/pydantic-core"}}\n'.encode()
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+    (tmp_path / "locked" / sbom).parent.mkdir(parents=True)
+    (tmp_path / "locked" / sbom).write_bytes(data)
+    (tmp_path / "locked" / "pydantic_core-2.46.4.dist-info" / "RECORD").write_text(
+        f"{sbom},sha256={digest},{len(data)}\npydantic_core-2.46.4.dist-info/RECORD,,\n"
+    )
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    upstream = staged(project, "lib", f"python{MINOR}", "site-packages", sbom)
+    assert f"    upstream, verbatim from its wheel's RECORD: {upstream}: {env['HOME']}/" in (
+        result.stdout.splitlines()
+    )
+
+
+def test_a_home_of_slash_is_not_searched_for(tmp_path: Path) -> None:
+    """HOME=/ would make the pattern '//', which every URL contains."""
+    project, env = fake_build_project(tmp_path)
+    urls = managed_python(tmp_path) / "lib" / f"python{MINOR}" / "urls.txt"
+    urls.write_text("https://example.org/\n")
+
+    result = run_build(project, {**env, "HOME": "/"})
+
+    assert result.returncode == 0, result.stderr

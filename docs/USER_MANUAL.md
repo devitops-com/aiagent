@@ -686,7 +686,10 @@ dependencies are installed as hash-checked wheels, exactly the pins of
 finds the lock incomplete (a dependency added to `pyproject.toml` without
 `make lock`). All temporary files go to a private directory under `/var/tmp`
 (never `/tmp`), removed when the build ends, and the smoke test ignores your
-`~/.config/aiagent` and `AIAGENT_*` settings.
+`~/.config/aiagent` and `AIAGENT_*` settings. The build fails if the payload holds
+a build-host path (the uv-managed Python's install path, the checkout or your home
+directory); upstream files that are byte for byte what a pinned wheel shipped are
+exempt.
 
 ---
 

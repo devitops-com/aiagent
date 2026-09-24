@@ -78,6 +78,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/dev/tty: No such device or address`.
 
 ### Security
+- **The installer no longer carries the build host's paths.** A locally built
+  payload named the maintainer's home directory in the bundled interpreter's
+  sysconfig data and in the launcher's `#!` line (which the installer rewrites).
+  Both now use python-build-standalone's neutral `/install`, and the build fails if
+  any staged file names the uv-managed Python's path, the checkout or `$HOME/`.
+  Files that are byte for byte what a wheel pinned in `requirements.txt` shipped
+  are exempt: five upstream files name their own project's CI checkout in the
+  GitHub runner's home directory, which is `$HOME` in a CI build.
 - **The build backend is hash-pinned.** `make lock` also writes
   `requirements-build.txt` (hatchling and its dependencies, from `[build-system]`),
   and `make package` builds the aiagent wheel with exactly those, hash-checked,
