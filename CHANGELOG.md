@@ -16,6 +16,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   install it. `make dev-install` recreates `.venv` on the pin (`uv venv --clear`)
   instead of keeping one on another patch, and the tests fail on any other
   interpreter.
+- **The bundle no longer ships libpython.** The bundled `bin/python3.14` has it
+  linked in statically; the shared `libpython3.14.so` (32 MB unpacked) and
+  `libpython3.so` are only for programs that embed Python, and no bundled extension
+  module needs them. The build now drops them and fails if any `libpython*`, or
+  any ELF file that needs one, is left. `make package` needs `readelf` (binutils).
 - **`make lock` takes `LOCK_ARGS`.** uv keeps the pins already in the lock
   files, so a plain `make lock` never moved anyio. Pass the upgrade through:
   `make lock LOCK_ARGS='--upgrade-package anyio'` (or `--upgrade` to re-resolve

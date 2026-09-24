@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from helpers_scripts import (
     ROOT,
     SYSTEM_PATH,
     VERSION,
+    minimal_elf,
     run_script,
     write_program,
 )
@@ -193,6 +195,11 @@ PIP_CHECK_OK = 'echo "No broken requirements found."'
 UV_CANNOT_DOWNLOAD = f"error: No download found for request: cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
 
 
+def managed_python(tmp_path: Path) -> Path:
+    """The fake uv-managed CPython of :func:`fake_build_project`."""
+    return tmp_path / "uv-python" / f"cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
+
+
 def fake_build_project(
     tmp_path: Path,
     pip_check: str = PIP_CHECK_OK,
@@ -204,7 +211,8 @@ def fake_build_project(
     zstd, x86_64), and fake tools that log to ``tmp_path``:
 
     - uv (uv.log) builds an empty wheel, runs the shell code ``uv_python_install`` for
-      `uv python install` and finds a fake uv-managed CPython
+      `uv python install` and finds a fake uv-managed CPython (with the shared libpython and
+      pkgconfig that python-build-standalone ships)
     - that CPython's python (python.log) prints its prefix, reports ``staged_version`` and fakes
       pip (``pip_check`` is the shell code for `pip check`; pip is gone once the build strips it);
       everything else goes to the interpreter running the tests
@@ -223,7 +231,7 @@ def fake_build_project(
     (project / "pyproject.toml").write_text(f'[project]\nname = "aiagent"\nversion = "{VERSION}"\n')
     (project / "requirements.txt").write_text("dspy==3.2.1\n")
     (project / "requirements-build.txt").write_text("hatchling==1.32.4\n")
-    python = tmp_path / "uv-python" / f"cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
+    python = managed_python(tmp_path)
     write_program(
         python / "bin" / f"python{MINOR}",
         f"""echo "$*" >> "{tmp_path / "python.log"}"
@@ -245,6 +253,16 @@ esac
 """,
     )
     (python / "lib" / f"python{MINOR}" / "site-packages" / "pip").mkdir(parents=True)
+    (python / "lib" / f"libpython{MINOR}.so.1.0").write_bytes(minimal_elf("libc.so.6"))
+    (python / "lib" / f"libpython{MINOR}.so").symlink_to(f"libpython{MINOR}.so.1.0")
+    (python / "lib" / "libpython3.so").write_bytes(minimal_elf(f"libpython{MINOR}.so.1.0"))
+    (python / "lib" / "pkgconfig").mkdir()
+    (python / "lib" / "pkgconfig" / f"python-{MINOR}.pc").write_text("prefix=/install\n")
+    dynload = python / "lib" / f"python{MINOR}" / "lib-dynload"
+    dynload.mkdir()
+    (dynload / f"_dbm.cpython-{MINOR.replace('.', '')}-x86_64-linux-gnu.so").write_bytes(
+        minimal_elf("libc.so.6")
+    )
     write_program(
         project / ".cache" / "aiagent-build" / "zstd-static-x86_64",
         """case "$1" in
@@ -437,7 +455,7 @@ def test_the_build_refuses_an_interpreter_that_resolves_outside_uvs_python_dir(
     tmp_path: Path,
 ) -> None:
     project, env = fake_build_project(tmp_path)
-    managed = tmp_path / "uv-python" / f"cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
+    managed = managed_python(tmp_path)
     elsewhere = tmp_path / "elsewhere" / managed.name
     elsewhere.parent.mkdir()
     managed.rename(elsewhere)
@@ -538,3 +556,35 @@ def test_the_smoke_test_ignores_the_maintainers_aiagent_config_and_settings(
         assert line.endswith(f" HOME={work}/home "), line
     scripts = [line.split()[2] for line in smoke if line.split()[1] == "-I"]
     assert scripts == [str(project / "tools" / "package" / "verify-versions.py"), f"{work}/probe.py"]
+
+
+def payload(tmp_path: Path) -> list[str]:
+    """The names in the payload tar the build handed to makeself (the fake zstd stores)."""
+    with tarfile.open(tmp_path / "mkself" / "bundle.tar.zst") as tar:
+        return tar.getnames()
+
+
+def test_the_bundle_ships_without_libpython(tmp_path: Path) -> None:
+    """bin/python3.X has libpython linked in statically: the shared one (32 MB), the libpython3.so
+    shim on top of it and their pkgconfig files are for embedding only."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    names = payload(tmp_path)
+    assert f"python/lib/python{MINOR}/lib-dynload" in names
+    assert [name for name in names if "libpython" in name or "pkgconfig" in name] == []
+    assert "no libpython and no ELF that needs one" in result.stdout
+
+
+def test_the_build_fails_when_a_staged_elf_needs_libpython(tmp_path: Path) -> None:
+    project, env = fake_build_project(tmp_path)
+    embed = managed_python(tmp_path) / "lib" / f"python{MINOR}" / "lib-dynload" / "_embed.so"
+    embed.write_bytes(minimal_elf("libc.so.6", f"libpython{MINOR}.so.1.0"))
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    staged = project / "dist" / ".build" / "python" / "lib" / f"python{MINOR}" / "lib-dynload"
+    assert f"  {staged / '_embed.so'}: libpython{MINOR}.so.1.0" in result.stderr.splitlines()

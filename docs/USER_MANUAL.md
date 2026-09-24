@@ -644,7 +644,10 @@ tests (`pytest -m live`) must run inside the `devai-net` network.
 self-extracting, run-once installer (**linux-x86_64**, ~71 MB). It carries a
 relocatable CPython (exactly the X.Y.Z in `.python-version`, now 3.14.7; the build
 fails on any other) with aiagent and every dependency,
-**sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The heavy
+**sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The
+interpreter has libpython linked in statically, so the shared `libpython3.14.so`
+(32 MB, only for programs that embed Python) is left out; the build fails if it,
+or any file that needs it, is in the bundle. The heavy
 tree is **zstd -19** compressed and decompressed at install time by a **bundled
 static zstd**, so the target host needs neither Python nor zstd. makeself adds a
 **SHA256** integrity check. The launcher runs the bundled Python in isolated mode
@@ -674,7 +677,7 @@ aiagent --help
 `--target DIR` (without `--`) is makeself's own option: it only unpacks the raw
 payload into `DIR`. Use `AIAGENT_PREFIX` or `-- --prefix DIR`.
 
-Build deps: `uv`, `makeself`, `curl`, and a C toolchain (to build the static zstd
+Build deps: `uv`, `makeself`, `curl`, `readelf` (binutils), and a C toolchain (to build the static zstd
 once; it's cached under `.cache/`). Run `make lock` before `make package`. The
 aiagent wheel is built by the hash-pinned backend of `requirements-build.txt`
 (hatchling, from `pyproject.toml`'s `[build-system]`; `make lock` writes it). The
