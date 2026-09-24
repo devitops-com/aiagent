@@ -2,7 +2,9 @@
 #
 # build-binary.sh — produce `dist/aiagent-install.sh`, a self-extracting
 # **makeself** installer carrying a relocatable, sourceless-precompiled CPython
-# 3.x with aiagent + every runtime dependency.
+# (exactly the X.Y.Z in .python-version) with aiagent + every runtime dependency.
+# tools/package/check-python.sh fails the build unless the staged interpreter is
+# exactly the pinned version.
 #
 # The heavy tree is zstd-compressed and decompressed at install time by a BUNDLED
 # static zstd, so target hosts need neither Python nor zstd. `.py` sources are
@@ -22,14 +24,18 @@ ARCH="$(uname -m)"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# .python-version pins the exact CPython (X.Y.Z); paths and the launcher use X.Y.
 PY_VERSION="$(tr -d '[:space:]' < "$ROOT/.python-version")"
-[ -n "$PY_VERSION" ] || { echo "ERROR: cannot read .python-version" >&2; exit 1; }
-PY_NODOT="${PY_VERSION/./}"
+[[ "$PY_VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]] \
+    || { echo "ERROR: .python-version must pin an exact CPython X.Y.Z, got '$PY_VERSION'" >&2; exit 1; }
+PY_MINOR="${PY_VERSION%.*}"
+PY_NODOT="${PY_MINOR/./}"
 
 DIST="$ROOT/dist"
 STAGE="$DIST/.build"
 MKDIR="$DIST/.mkself"
 STARTUP_IN="$ROOT/tools/package/startup.sh.in"
+CHECK_PYTHON="$ROOT/tools/package/check-python.sh"
 OUT="$DIST/$APP-install.sh"
 REQ="$ROOT/requirements.txt"
 BUILD_REQ="$ROOT/requirements-build.txt"
@@ -84,25 +90,40 @@ uv build --wheel --build-constraints "$BUILD_REQ" --require-hashes -o "$DIST" >/
 WHEEL="$(ls "$DIST"/${APP}-${VERSION}-*.whl)"
 
 # --- 3. Stage a standalone, relocatable CPython -------------------------
-uv python install "$PY_VERSION" >/dev/null 2>&1 || true
-PYBIN="$(uv python find "$PY_VERSION")"
-BASEP="$("$PYBIN" -c 'import sys; print(sys.base_prefix)')"
+# --system --managed-python: a uv-managed (python-build-standalone) interpreter, never
+# the project's .venv (`uv python find` alone returns it, and its base_prefix is the
+# patch the venv was made on) or a distro python — only the former is relocatable. A
+# uv release only knows the CPython patches published before it: a bump of
+# .python-version may need a newer uv.
+if ! uv_out="$(uv python install "$PY_VERSION" 2>&1)"; then
+    printf '%s\n' "$uv_out" >&2
+    echo "ERROR: $(uv --version) cannot install CPython $PY_VERSION (.python-version): update uv" \
+         "or allow uv's Python downloads" >&2
+    exit 1
+fi
+PYBIN="$(uv python find --system --managed-python "$PY_VERSION")"
+BASEP="$(cd "$("$PYBIN" -c 'import sys; print(sys.base_prefix)')" && pwd -P)"
+UV_PYTHONS="$(cd "$(uv python dir)" && pwd -P)"
+case "$BASEP" in
+    "$UV_PYTHONS"/*) ;;
+    *) echo "ERROR: $BASEP is not a uv-managed CPython (not under $UV_PYTHONS)" >&2; exit 1 ;;
+esac
 echo "==> Staging interpreter from $BASEP"
 cp -a "$BASEP" "$STAGE/python"
-PY="$STAGE/python/bin/python${PY_VERSION}"
-rm -f "$STAGE/python/lib/python${PY_VERSION}/EXTERNALLY-MANAGED"
+PY="$STAGE/python/bin/python${PY_MINOR}"
+rm -f "$STAGE/python/lib/python${PY_MINOR}/EXTERNALLY-MANAGED"
 
 # --- 4. Prune unused stdlib (incl. Tcl/Tk v8 AND v9) --------------------
-( cd "$STAGE/python/lib/python${PY_VERSION}" && rm -rf \
+( cd "$STAGE/python/lib/python${PY_MINOR}" && rm -rf \
     test tkinter turtledemo idlelib lib2to3 ensurepip \
-    config-${PY_VERSION}-*-linux-gnu 2>/dev/null || true )
+    "config-${PY_MINOR}"-*-linux-gnu 2>/dev/null || true )
 # tkinter is gone, so Tcl/Tk is dead weight. The standalone ships v9
 # (libtcl9tk9.0.so, tcl9/, tk9/) — match v8 AND v9 (the old glob missed v9).
 ( cd "$STAGE/python/lib" && rm -rf \
     tcl8* tk8* tcl9* tk9* Tix* itcl* tdbc* thread* libtcl* libtk* 2>/dev/null || true )
 
 # --- 4b. Reset site-packages to a clean baseline (keep only pip) --------
-( cd "$STAGE/python/lib/python${PY_VERSION}/site-packages" && for d in *; do
+( cd "$STAGE/python/lib/python${PY_MINOR}/site-packages" && for d in *; do
     case "$d" in pip|pip-*|__pycache__) ;; *) rm -rf "$d" ;; esac
   done )
 
@@ -130,7 +151,7 @@ if ! check="$("$PY" -m pip check 2>&1)" || [ "$check" != "No broken requirements
     exit 1
 fi
 
-SP="$STAGE/python/lib/python${PY_VERSION}/site-packages"
+SP="$STAGE/python/lib/python${PY_MINOR}/site-packages"
 ( cd "$SP" && rm -rf pip setuptools wheel pkg_resources _distutils_hack 2>/dev/null || true )
 find "$SP" -name direct_url.json -delete 2>/dev/null || true
 
@@ -139,7 +160,7 @@ find "$SP" -name direct_url.json -delete 2>/dev/null || true
 [ -d "$SP/torch" ] && { echo "ERROR: torch leaked into the bundle" >&2; exit 1; }
 echo "==> Stripping dead weight (dep CLIs, headers, hf_xet, dep tests)"
 ( cd "$STAGE/python/bin" && for f in *; do
-    case "$f" in python${PY_VERSION}|python3|python|${APP}) ;; *) rm -f "$f" ;; esac
+    case "$f" in "python${PY_MINOR}"|python3|python|"${APP}") ;; *) rm -f "$f" ;; esac
   done )
 rm -rf "$STAGE/python/include" "$STAGE/python/share"
 rm -f "$STAGE/python/lib"/libpython*.a
@@ -167,6 +188,9 @@ echo "==> Stripping AWS/Bedrock subtree (boto3 + botocore + s3transfer + deps)"
 for leftover in boto3 botocore jmespath dateutil s3transfer six.py; do
     [ -e "$SP/$leftover" ] && { echo "ERROR: $leftover survived the AWS strip" >&2; exit 1; }
 done
+
+# Exactly the pinned CPython.
+bash "$CHECK_PYTHON" "$STAGE/python" "$PY_VERSION"
 
 # --- 6. Sanity-check the staged interpreter ----------------------------
 # NB: do NOT `strip` libpython — it corrupts PBS symbol-version tables.
@@ -242,7 +266,7 @@ foreign="$("$MKDIR/zstd" -dc "$MKDIR/bundle.tar.zst" | tar --numeric-owner -tvf 
 {
     printf '%s\n' '#!/bin/sh'
     printf 'AIAGENT_VERSION=%s\n' "$VERSION"
-    printf 'PYVER=%s\n' "$PY_VERSION"
+    printf 'PYVER=%s\n' "$PY_MINOR"
     cat "$STARTUP_IN"
 } > "$MKDIR/startup.sh"
 chmod +x "$MKDIR/startup.sh"
@@ -279,11 +303,11 @@ AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 # expected rather than reported as MISSING.
 echo "==> Verifying bundled module versions against requirements.txt"
 # shellcheck disable=SC2086 # STRIP_ABSENT is an intentional word-split list
-"$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -I "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
+"$TPREFIX/lib/$APP/bin/python${PY_MINOR}" -I "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
     || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; rm -rf "$TPREFIX"; exit 1; }
 
 # $PREFIX/bin must contain ONLY `aiagent`. Installers up to 0.3.0 also linked
-# the bundled interpreter here as python$PY_VERSION, which shadowed the host's
+# the bundled interpreter here as python$PY_MINOR, which shadowed the host's
 # own python for anyone with ~/.local/bin ahead of /usr/bin — a sourceless
 # interpreter carrying aiagent's site-packages, with pip/setuptools stripped.
 onpath="$(ls "$TPREFIX/bin")"
@@ -363,7 +387,7 @@ reg, _ = load_registry(load_settings())
 for name in ("chat", "extract"):
     build_module(reg.get(name))
 PYEOF
-if ! "$TPREFIX/lib/$APP/bin/python${PY_VERSION}" -I "$PROBE"; then
+if ! "$TPREFIX/lib/$APP/bin/python${PY_MINOR}" -I "$PROBE"; then
     echo "ERROR: bundle probe failed (skill load, litellm import, or AWS strip)" >&2
     rm -f "$PROBE"; exit 1
 fi

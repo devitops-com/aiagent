@@ -1,7 +1,10 @@
 SHELL := /bin/bash
 
-# Single source of truth for the Python version (dev venv, CI, and the bundled
-# installer all derive from .python-version — edit it there only).
+# Single source of truth for the exact Python version, X.Y.Z (dev venv, CI, the
+# locks and the bundled installer all derive from .python-version — edit it there
+# only; the build fails unless the bundled interpreter is exactly this version). A
+# patch bump may need a uv that knows the new CPython; then re-run
+# `make dev-install` (the test suite fails on any other interpreter).
 PYTHON_VERSION := $(shell cat .python-version)
 
 # Prefer .venv/bin/* when present (dev-install), else fall back to PATH.
@@ -19,8 +22,10 @@ help: ## Show this help
 
 # --- Setup ---
 
-dev-install: ## Set up .venv with aiagent + dev dependencies (editable)
-	uv venv --python $(PYTHON_VERSION) .venv 2>/dev/null || true
+# A fresh venv on exactly .python-version (--clear: a venv left on another patch must
+# not survive; uv's errors stay visible).
+dev-install: ## Set up a fresh .venv on .python-version with aiagent + dev dependencies (editable)
+	uv venv --clear --python $(PYTHON_VERSION) .venv
 	uv pip install --python .venv/bin/python -e ".[dev]"
 
 # --python-version pins the resolution to .python-version instead of whatever

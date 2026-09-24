@@ -93,7 +93,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 
 ## Commands
 
-`make dev-install` · `make check` (ruff + mypy --strict) · `make test` (hermetic) ·
+`make dev-install` (fresh `.venv` on exactly `.python-version`) · `make check` (ruff + mypy --strict) ·
+`make test` (hermetic) ·
 `make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging; writes the hashed
 `requirements.txt`, `requirements-dev.txt` and `requirements-build.txt`; keeps existing pins —
 `LOCK_ARGS='--upgrade-package X'` moves one) · `make package` ·
@@ -135,7 +136,10 @@ entrypoint (banner + `exec $SHELL`).
 ## Packaging
 
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
-(**linux-x86_64**, ~71 MB): bundled CPython 3.14, **sourceless** (`.pyc` only),
+(**linux-x86_64**, ~71 MB): bundled CPython **exactly** `.python-version` (3.14.7;
+X.Y.Z, the single source of truth for the dev venv, CI, the locks'
+`--python-version` and the bundle; `requires-python` keeps the 3.14 floor),
+**sourceless** (`.pyc` only),
 **zstd -19** payload decompressed by a **bundled static zstd** (target needs no
 zstd), SHA256 integrity, `-I` (isolated) launcher — ignores `PYTHONPATH`,
 `PYTHONHOME`, user site and cwd, so a user skill's `<module>:<attr>` metric can't
@@ -157,6 +161,15 @@ The build then installs to a temp prefix and **audits every module against
 `requirements.txt`** at both the dist-info **and** imported-`__version__` level
 (`tools/package/verify-versions.py`, `STRIP_ABSENT` allow-listed), failing on any
 stale module — the reproducibility guard for the v0.1.0 metadata/code split.
+
+**Exact CPython.** The build stages uv's managed interpreter
+(`uv python find --system --managed-python`, which must resolve under `uv python dir`),
+never the project `.venv` (plain `uv python find` returns it, with whatever patch it
+was made on); `tools/package/check-python.sh` (`tests/test_bundle_python.py`) fails the
+build unless it reports exactly `.python-version`. Paths and the baked `PYVER` use X.Y.
+`make dev-install` recreates `.venv` on the pin (`uv venv --clear`) and a test fails on
+any other interpreter. A patch bump may need a newer uv (it only knows CPython patches
+published before it); the build then stops with uv's own error and says so.
 
 **Installer invariants** (`tests/test_installer.py`; the smoke test re-checks the
 built one): payload `root:root`, no group/other write (build gate), extracted with
@@ -182,7 +195,7 @@ the wget fallback cannot enforce that) and stages under `$TMPDIR` (default `/var
 Repo `devitops-com/aiagent` is **public**; uv-style install:
 `curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
 `AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`.
-Scripts: `tools/package/{build-binary.sh, startup.sh.in}`, `tools/release/release.sh`, `install.sh`.
+Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh}`, `tools/release/release.sh`, `install.sh`.
 
 ## Testing
 
