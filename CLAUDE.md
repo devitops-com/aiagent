@@ -136,7 +136,7 @@ entrypoint (banner + `exec $SHELL`).
 ## Packaging
 
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
-(**linux-x86_64**, ~71 MB): bundled CPython **exactly** `.python-version` (3.14.7;
+(**linux-x86_64**, ~63 MB): bundled CPython **exactly** `.python-version` (3.14.7;
 X.Y.Z, the single source of truth for the dev venv, CI, the locks'
 `--python-version` and the bundle; `requires-python` keeps the 3.14 floor), **no
 libpython** (PBS links it statically into `bin/python3.14`; the shared
