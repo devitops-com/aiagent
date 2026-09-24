@@ -10,8 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Verifiable releases.** GitHub Actions builds every release from its tag and
   attests `aiagent-install.sh` and `install.sh` (build provenance, signed through
   Sigstore). Check a download with
-  `gh attestation verify FILE --repo devitops-com/aiagent`. Releases up to v0.3.1
-  were built on the maintainer's machine and have no attestation.
+  `gh attestation verify FILE --repo devitops-com/aiagent`, or let `install.sh`
+  do it before it runs the installer: `curl … | AIAGENT_VERIFY=1 sh`. Without
+  `gh`, if the check fails, or with any other value than `0`/`1`, nothing is run
+  and the download is removed. Releases up to v0.3.1 were built on the
+  maintainer's machine and have no attestation, so `AIAGENT_VERIFY=1` fails for
+  them.
 
 ### Changed
 - **`make release` only tags; CI builds, attests and publishes.** It promotes the
@@ -144,7 +148,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   installer keep the uid-1000 tree until rebuilt.
 - **`install.sh` downloads with `curl --proto '=https' --tlsv1.2`**, so no
   redirect can downgrade the download to plain HTTP. The wget fallback (hosts
-  without curl) cannot enforce this.
+  without curl) cannot enforce this; `AIAGENT_VERIFY=1` checks what it downloaded.
 - **anyio 4.14.1 -> 4.15.1** in both locks (typing-extensions 4.15.0 -> 4.16.0
   comes with it), past CVE-2026-63374, CVE-2026-64847 and CVE-2026-63349 (fixed
   in 4.14.2). v0.3.1 bundles 4.14.1; the daily dependency audit has failed on it

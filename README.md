@@ -46,6 +46,31 @@ aiagent run extract --text "Lunch at Chipotle $12.50 on 3/4/2025"
 The second prints `merchant`, `date` (ISO), and `amount` parsed from the note.
 Run `aiagent --help` for the full command list.
 
+### Verify the download
+
+Every release is built by GitHub Actions, which also signs a
+[build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+for both release files. With the [GitHub CLI](https://cli.github.com) (logged in),
+set `AIAGENT_VERIFY=1` and `install.sh` checks the installer's attestation before it
+runs it. If the check fails, or `gh` is missing, it stops without running anything:
+
+```bash
+curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_VERIFY=1 sh
+```
+
+That does not check `install.sh` itself. To check both files by hand:
+
+```bash
+curl -fsSLO https://github.com/devitops-com/aiagent/releases/latest/download/install.sh
+curl -fsSLO https://github.com/devitops-com/aiagent/releases/latest/download/aiagent-install.sh
+gh attestation verify install.sh --repo devitops-com/aiagent
+gh attestation verify aiagent-install.sh --repo devitops-com/aiagent
+sh aiagent-install.sh
+```
+
+Releases up to v0.3.1 were built on the maintainer's machine and have no
+attestation: with `AIAGENT_VERSION` set to one of them, `AIAGENT_VERIFY=1` fails.
+
 ## Documentation
 
 The **[User Manual](docs/USER_MANUAL.md)** documents every implemented feature in

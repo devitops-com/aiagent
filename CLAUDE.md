@@ -207,6 +207,8 @@ replaced; makeself runs `sh ./startup.sh` and zstd runs from the stage, so a
 noexec `$TMPDIR` works; the extraction dir defaults to `/var/tmp` (patched
 makeself header), never `/tmp`. Smoke test also checks `aiagent version` ==
 pyproject version, with a hostile `PYTHONPATH`/`PYTHONHOME` too, and file modes.
+`install.sh` with `AIAGENT_VERIFY=1` runs the installer only after
+`gh attestation verify` succeeds (tested with a fake `gh`).
 
 **Build temp files: never `/tmp`.** uv/pip unpacking, makeself's archive, the
 static-zstd build and the smoke install, probe and hostile-env files live in one
@@ -253,7 +255,10 @@ It downloads HTTPS-only with curl (`--proto '=https' --tlsv1.2`, redirects inclu
 the wget fallback cannot enforce that) and stages under `$TMPDIR` (default `/var/tmp`).
 Repo `devitops-com/aiagent` is **public**; uv-style install:
 `curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
-`AIAGENT_VERSION`). Non-interactive `make release`: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
+`AIAGENT_VERSION`). `AIAGENT_VERIFY=1` (opt-in) runs `gh attestation verify <download>
+--repo devitops-com/aiagent` before running it and fails closed: no `gh`, a failed
+check or any `AIAGENT_VERIFY` other than `0`/`1` means exit 1, nothing run, the
+download removed (releases up to v0.3.1 have no attestation). Non-interactive `make release`: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
 is the **only distribution**: aiagent is not on PyPI, and the `Private :: Do Not Upload`
 classifier (pinned by a test) makes PyPI reject an accidental upload.
 Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-host-paths.py}`,
