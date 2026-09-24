@@ -100,7 +100,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 `make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging; writes the hashed
 `requirements.txt`, `requirements-dev.txt` and `requirements-build.txt`; keeps existing pins —
 `LOCK_ARGS='--upgrade-package X'` moves one) · `make package` ·
-`make release` (tag + publish GitHub release; version from pyproject).
+`make release` (tag + push; the tag makes CI build, attest and publish it; version from
+pyproject).
 
 ## Invariants & gotchas (don't break these)
 
@@ -193,7 +194,8 @@ was made on); `tools/package/check-python.sh` (`tests/test_bundle_python.py`) fa
 build unless it reports exactly `.python-version`. Paths and the baked `PYVER` use X.Y.
 `make dev-install` recreates `.venv` on the pin (`uv venv --clear`) and a test fails on
 any other interpreter. A patch bump may need a newer uv (it only knows CPython patches
-published before it); the build then stops with uv's own error and says so.
+published before it), locally and in CI (setup-uv's `version` in `release.yml`); the
+build then stops with uv's own error and says so.
 
 **Installer invariants** (`tests/test_installer.py`; the smoke test re-checks the
 built one): payload `root:root`, no group/other write (build gate), extracted with
@@ -213,23 +215,69 @@ or fail; `dist/` keeps only the staging trees. The smoke test runs with `HOME` t
 and every `AIAGENT_*` unset, so the maintainer's `~/.config/aiagent` (config.toml,
 user skills) and env cannot change its result.
 
-**Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
-versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,
-clean tree incl. untracked files and assume-unchanged/skip-worktree entries,
-in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
-refused) → rebuild installer → commit → tag → atomic push → `gh release create`
-with **two** assets: `aiagent-install.sh` + `install.sh`. `install.sh` is a POSIX
+**Release/distribution.** Releases are **built, attested and published by GitHub
+Actions** (`.github/workflows/release.yml`), never on the maintainer's machine:
+artifact attestations can only be made there. `make release`
+(`tools/release/release.sh`) only tags: version from pyproject → tag `vX.Y.Z`; guards
+(on `main`, clean tree incl. untracked files and assume-unchanged/skip-worktree
+entries, in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
+refused, via `tools/release/release-notes.sh`) → commit `chore: release vX.Y.Z` →
+annotated tag → atomic push. No build, no `gh release create`. It then waits up to
+`AIAGENT_RELEASE_WATCH_WAIT` s (default 60) for the tag's `release.yml` run, follows it
+with `gh run watch` and prints the release URL, or the recovery for a failed run (no
+run showing up: it says where to follow it and still succeeds).
+- `release.yml` runs on PRs, pushes to `main` and `v*` tags; a concurrency group per
+  ref builds a tag once. Job `installer + smoke test` (read-only token, every run): on
+  a tag, checks it is `v` + pyproject's version; setup-uv pinned (`version`, no cache;
+  it must know the pinned CPython), apt makeself, `make package` (full smoke test; no
+  dev venv needed), uploads `dist/aiagent-install.sh`. So a PR proves the release build
+  before any tag exists. Job `attest + publish` (tag pushes only; the only job with
+  `contents`, `id-token` and `attestations: write`): notes = the version's CHANGELOG
+  section (`release-notes.sh`), `actions/attest-build-provenance` over
+  `dist/aiagent-install.sh` and `install.sh` (public repo: public-good Sigstore), then
+  `gh release create vX.Y.Z --verify-tag --title "aiagent vX.Y.Z" --notes-file …` with
+  **two** assets: `aiagent-install.sh` + `install.sh`. The installer bundles the
+  promoted CHANGELOG from the tag checkout. The job names are required checks (see
+  Repository settings) and pinned by a test.
+- **CI:** every workflow pins its actions by commit SHA with a `# vX.Y.Z` comment and
+  checks out with `persist-credentials: false` (a test checks both; no Dependabot:
+  bump the pins by hand, resolving the SHA with `gh api`). `ci.yml` installs the
+  hash-locked `requirements-dev.txt` + aiagent `--no-deps -e .`, like
+  `make dev-install`. `audit.yml` pip-audits all three locks daily and on every PR or
+  push to `main` that changes a lock or `pyproject.toml`.
+
+`install.sh` is a POSIX
 **bootstrap** — a makeself archive can't be piped to `sh` (it seeks within `$0`),
 so it downloads the installer to a temp file (auto-removed via `trap`) and runs it.
 It downloads HTTPS-only with curl (`--proto '=https' --tlsv1.2`, redirects included;
 the wget fallback cannot enforce that) and stages under `$TMPDIR` (default `/var/tmp`).
 Repo `devitops-com/aiagent` is **public**; uv-style install:
 `curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
-`AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
+`AIAGENT_VERSION`). Non-interactive `make release`: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
 is the **only distribution**: aiagent is not on PyPI, and the `Private :: Do Not Upload`
 classifier (pinned by a test) makes PyPI reject an accidental upload.
 Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-host-paths.py}`,
-`tools/release/release.sh`, `install.sh`.
+`tools/release/{release.sh, release-notes.sh}`, `install.sh`,
+`.github/workflows/{ci.yml, audit.yml, release.yml}`.
+
+## Repository settings (GitHub)
+
+**Not in place yet: applied by hand once the CI release flow is on `main`** (check with
+`gh api repos/devitops-com/aiagent/rulesets`):
+- Ruleset `main` (default branch): no deletion, no force-push; required checks
+  `lint + types + bandit`, `tests + coverage + wheel` and `installer + smoke test`
+  (the GitHub Actions app, integration 15368), so rename those jobs only together with
+  the ruleset. `pip-audit` is not required (it only runs on lock changes).
+- Ruleset `release-tags` (`refs/tags/v*`): tags cannot be created, moved or deleted.
+- Both let repository admins bypass (`always`): `make release` pushes its release
+  commit straight to `main` and pushes the tag. Everyone else goes through a PR with
+  green checks.
+- Immutable releases on, before the first CI-built release: a published release's
+  assets and tag cannot change (not retroactive: v0.3.1 and earlier stay mutable, and
+  a published release cannot be fixed, so drop-the-tag recovery works only before
+  publish). `gh release create` with files uploads to a draft first, which this allows.
+- Optional: secret scanning and push protection; `sha_pinning_required` last, after a
+  trial on a branch.
 
 ## Testing
 

@@ -6,7 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Verifiable releases.** GitHub Actions builds every release from its tag and
+  attests `aiagent-install.sh` and `install.sh` (build provenance, signed through
+  Sigstore). Check a download with
+  `gh attestation verify FILE --repo devitops-com/aiagent`. Releases up to v0.3.1
+  were built on the maintainer's machine and have no attestation.
+
 ### Changed
+- **`make release` only tags; CI builds, attests and publishes.** It promotes the
+  CHANGELOG, commits, tags and pushes commit and tag together, then follows the
+  tag's run of the new `release.yml` workflow and prints the release URL, or how
+  to recover when the run fails. It no longer builds the installer locally or runs
+  `gh release create`. The workflow also builds the installer, with the full smoke
+  test, for every pull request and push to `main`, so a broken `make package`
+  shows up before a release.
 - **aiagent is marked `Private :: Do Not Upload`.** The installer from the GitHub
   releases is its only distribution; the trove classifier makes PyPI reject an
   accidental upload of the wheel or sdist.

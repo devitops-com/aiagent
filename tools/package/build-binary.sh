@@ -109,11 +109,12 @@ WHEEL="$(ls "$DIST"/${APP}-${VERSION}-*.whl)"
 # the project's .venv (`uv python find` alone returns it, and its base_prefix is the
 # patch the venv was made on) or a distro python — only the former is relocatable. A
 # uv release only knows the CPython patches published before it: a bump of
-# .python-version may need a newer uv.
+# .python-version may need a newer uv, locally and in CI (setup-uv's `version` in
+# .github/workflows/release.yml).
 if ! uv_out="$(uv python install "$PY_VERSION" 2>&1)"; then
     printf '%s\n' "$uv_out" >&2
     echo "ERROR: $(uv --version) cannot install CPython $PY_VERSION (.python-version): update uv" \
-         "or allow uv's Python downloads" >&2
+         "(in CI: setup-uv's version in .github/workflows/release.yml) or allow uv's Python downloads" >&2
     exit 1
 fi
 PYBIN="$(uv python find --system --managed-python "$PY_VERSION")"

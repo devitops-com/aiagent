@@ -3,8 +3,9 @@ SHELL := /bin/bash
 # Single source of truth for the exact Python version, X.Y.Z (dev venv, CI, the
 # locks and the bundled installer all derive from .python-version — edit it there
 # only; the build fails unless the bundled interpreter is exactly this version). A
-# patch bump may need a uv that knows the new CPython; then re-run
-# `make dev-install` (the test suite fails on any other interpreter).
+# patch bump may need a uv that knows the new CPython: locally, and the setup-uv
+# `version` in .github/workflows/release.yml. Then re-run `make dev-install` (the
+# test suite fails on any other interpreter).
 PYTHON_VERSION := $(shell cat .python-version)
 
 # Prefer .venv/bin/* when present (dev-install), else fall back to PATH.
@@ -77,7 +78,7 @@ package: ## Build the self-contained, precompiled installer -> dist/aiagent-inst
 
 # --- Release ---
 
-release: ## Cut a release: promote CHANGELOG, rebuild installer, tag + push, publish GitHub release (version from pyproject.toml)
+release: ## Cut a release: promote CHANGELOG, tag + push; the tag makes CI build, attest and publish it (version from pyproject.toml)
 	@bash tools/release/release.sh
 
 # --- Cleanup ---
