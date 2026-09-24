@@ -223,7 +223,9 @@ It downloads HTTPS-only with curl (`--proto '=https' --tlsv1.2`, redirects inclu
 the wget fallback cannot enforce that) and stages under `$TMPDIR` (default `/var/tmp`).
 Repo `devitops-com/aiagent` is **public**; uv-style install:
 `curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
-`AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`.
+`AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
+is the **only distribution**: aiagent is not on PyPI, and the `Private :: Do Not Upload`
+classifier (pinned by a test) makes PyPI reject an accidental upload.
 Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-host-paths.py}`,
 `tools/release/release.sh`, `install.sh`.
 

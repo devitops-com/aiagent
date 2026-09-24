@@ -29,6 +29,10 @@ install), and every user can read and run them. The installer unpacks under
 `$TMPDIR`, by default `/var/tmp` (never `/tmp`), and also works where that
 directory is mounted `noexec`.
 
+The installer from the GitHub releases is the only way to install aiagent: it is
+not published to PyPI (its package metadata carries the `Private :: Do Not Upload`
+classifier, which PyPI refuses).
+
 Then, with a reachable router, try these two:
 
 ```bash

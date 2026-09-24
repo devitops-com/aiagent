@@ -30,6 +30,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Typing :: Typed",
+    # aiagent is not published to PyPI: the installer (aiagent-install.sh from the GitHub
+    # releases) is its only distribution. PyPI rejects any upload with a Private classifier.
+    "Private :: Do Not Upload",
 ]
 dependencies = [
     "dspy==3.2.1",
