@@ -12,7 +12,8 @@
 # The heavy tree is zstd-compressed and decompressed at install time by a BUNDLED
 # static zstd, so target hosts need neither Python nor zstd. `.py` sources are
 # dropped (sourceless `.pyc` only). makeself provides SHA256 integrity. x86-64.
-# The payload is owned by root:root with modes u+rwX,go+rX,go-w.
+# The payload is owned by root:root with modes u+rwX,go+rX,go-w, and carries no
+# build-host path (tools/package/check-host-paths.py).
 #
 # Build deps: uv, makeself, curl, gcc/make (to build the static zstd once), readelf.
 # Run `make lock` first (requirements.txt is installed hash-checked, and
@@ -43,6 +44,7 @@ STAGE="$DIST/.build"
 MKDIR="$DIST/.mkself"
 STARTUP_IN="$ROOT/tools/package/startup.sh.in"
 CHECK_PYTHON="$ROOT/tools/package/check-python.sh"
+CHECK_HOST_PATHS="$ROOT/tools/package/check-host-paths.py"
 OUT="$DIST/$APP-install.sh"
 REQ="$ROOT/requirements.txt"
 BUILD_REQ="$ROOT/requirements-build.txt"
@@ -207,6 +209,28 @@ done
 # Exactly the pinned CPython, no libpython left, and no ELF that NEEDs one.
 bash "$CHECK_PYTHON" "$STAGE/python" "$PY_VERSION"
 
+# --- 5d. No build-host paths in the payload -----------------------------
+# uv rewrote the interpreter's sysconfig data from python-build-standalone's neutral
+# /install to its install path in the maintainer's home; pip stamped the console script
+# with the staging path. Put /install back (sysconfig derives the real paths from
+# sys.prefix at run time) and give the launcher a placeholder shebang, which the
+# installer rewrites to the bundled interpreter anyway.
+"$PY" -I - "$BASEP" "$STAGE/python/lib/python${PY_MINOR}"/_sysconfigdata_*.py <<'PYEOF'
+import sys
+base, *files = sys.argv[1:]
+for name in files:
+    with open(name, encoding="utf-8") as f:
+        text = f.read()
+    with open(name, "w", encoding="utf-8") as f:
+        f.write(text.replace(base, "/install"))
+PYEOF
+LAUNCHER="$STAGE/python/bin/$APP"
+case "$(head -n1 "$LAUNCHER")" in
+    '#!'*/python*) ;;
+    *) echo "ERROR: unexpected first line in pip's $APP launcher: $(head -n1 "$LAUNCHER")" >&2; exit 1 ;;
+esac
+sed -i "1s|.*|#!/install/bin/python${PY_MINOR}|" "$LAUNCHER"
+
 # --- 6. Sanity-check the staged interpreter ----------------------------
 # NB: do NOT `strip` the PBS ELF files: that corrupted libpython's symbol-version tables, and
 # bin/python carries the same (statically linked) code.
@@ -247,6 +271,16 @@ PYEOF
 # --- 7c. Sanity on the sourceless tree ---------------------------------
 "$PY" -I -c "import aiagent, dspy" \
     || { echo "ERROR: sourceless bundle not importable" >&2; exit 1; }
+
+# The payload must not disclose the build host (account name, directory layout). Files
+# verified byte for byte against the RECORD of a wheel pinned in requirements.txt are upstream
+# content and exempt: the SBOMs of jiter, pydantic_core, rpds_py and tokenizers, and
+# tokenizers' compiled extension, name their own CI checkout, /home/runner/work/..., which is
+# under $HOME/ on a GitHub runner. Whatever the build or pip wrote stays scanned, the aiagent
+# wheel built from the checkout included.
+leak_patterns=("$BASEP" "$ROOT/")
+case "${HOME:-/}" in /) ;; *) leak_patterns+=("$HOME/") ;; esac
+"$PY" -I "$CHECK_HOST_PATHS" "$REQ" "$STAGE" "${leak_patterns[@]}"
 
 # --- 8. Obtain a static zstd (cached across builds) --------------------
 # Reused only while it is the pinned version and static (no program interpreter);

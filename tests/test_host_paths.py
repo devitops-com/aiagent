@@ -1,0 +1,368 @@
+"""check-host-paths.py: the build gate that keeps build-host paths out of the payload.
+
+build-binary.sh searches the staged tree for the build's own paths: the uv-managed CPython it
+copied, the project checkout and ``$HOME/``. On a GitHub runner ``$HOME`` is /home/runner, and
+five upstream files name their own project's CI checkout (/home/runner/work/...): the CycloneDX
+SBOMs of jiter, pydantic_core, rpds_py and tokenizers, and tokenizers' compiled extension. Those
+are bytes that pip installed from a hash-pinned wheel, which cannot disclose this build host.
+So a file listed with a matching sha256 in the ``*.dist-info/RECORD`` of a distribution that
+requirements.txt pins is exempt. Everything the build or pip writes stays scanned: the aiagent
+wheel built from the checkout, the compiled .pyc, _sysconfigdata, the launcher, the installer
+metadata pip rehashes into RECORD, and every file that is in no such RECORD or differs from it.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from helpers_scripts import PINNED_PYTHON, ROOT, SYSTEM_PATH, run_script
+
+CHECK_HOST_PATHS = ROOT / "tools" / "package" / "check-host-paths.py"
+MINOR = PINNED_PYTHON.rsplit(".", 1)[0]
+
+# What build-binary.sh passes on a GitHub runner: the uv-managed CPython, the checkout, $HOME/.
+CI_BASEP = f"/home/runner/.local/share/uv/python/cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
+CI_ROOT = "/home/runner/work/aiagent/aiagent/"
+CI_HOME = "/home/runner/"
+CI_PATTERNS = (CI_BASEP, CI_ROOT, CI_HOME)
+
+# The hash-pinned lock the build installs --require-hashes, in uv pip compile's layout.
+LOCK = """\
+other==1.0 \\
+    --hash=sha256:0000
+pydantic-core==2.46.4 \\
+    --hash=sha256:0000
+    # via pydantic
+pygments==2.21.0 \\
+    --hash=sha256:0000
+tokenizers==0.23.1 \\
+    --hash=sha256:0000
+"""
+SBOM = "pydantic_core-2.46.4.dist-info/sboms/pydantic-core.cyclonedx.json"
+SBOM_TEXT = '{"bom-ref": "path+file:///home/runner/work/pydantic/pydantic/pydantic-core#2.46.4"}\n'
+LAUNCHER = "#!/home/runner/work/aiagent/aiagent/dist/.build/python/bin/python3.14\nimport aiagent\n"
+
+
+def sha256_field(data: bytes) -> str:
+    """RECORD's hash field: sha256=<urlsafe base64 without padding>."""
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=")
+    return f"sha256={digest.decode()}"
+
+
+def site_packages(stage: Path) -> Path:
+    return stage / "python" / "lib" / f"python{MINOR}" / "site-packages"
+
+
+def install(stage: Path, dist: str, files: dict[str, str], record: list[str]) -> None:
+    """Lay ``files`` (paths relative to site-packages) down and append ``record`` rows to the
+    RECORD of the ``dist`` dist-info (which lists itself without a hash, as pip writes it)."""
+    sp = site_packages(stage)
+    for rel, text in files.items():
+        path = sp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    record_path = sp / f"{dist}.dist-info" / "RECORD"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [*record, f"{dist}.dist-info/RECORD,,"]
+    record_path.write_text("".join(f"{row}\n" for row in rows), encoding="utf-8")
+
+
+def verbatim_row(rel: str, text: str) -> str:
+    data = text.encode()
+    return f"{rel},{sha256_field(data)},{len(data)}"
+
+
+def make_stage(root: Path) -> Path:
+    """A clean staged tree as build-binary.sh leaves it before the gate: sourceless (the RECORD
+    still lists the deleted .py), the launcher and sysconfig data rewritten to /install, and
+    pydantic_core's upstream SBOM verbatim from its wheel. The lock is next to it."""
+    (root / "requirements.txt").write_text(LOCK, encoding="utf-8")
+    stage = root / "stage"
+    lib = stage / "python" / "lib" / f"python{MINOR}"
+    lib.mkdir(parents=True)
+    (lib / "_sysconfigdata__linux_x86_64-linux-gnu.pyc").write_bytes(b"\xf3\r\r\n/install/lib")
+    launcher = stage / "python" / "bin" / "aiagent"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(f"#!/install/bin/python{MINOR}\nimport aiagent\n", encoding="utf-8")
+    (stage / "python" / "bin" / "python3").symlink_to(f"python{MINOR}")
+    source = "from ._pydantic_core import *\n"
+    install(
+        stage,
+        "pydantic_core-2.46.4",
+        {SBOM: SBOM_TEXT, "pydantic_core/__init__.pyc": "compiled"},
+        [verbatim_row(SBOM, SBOM_TEXT), verbatim_row("pydantic_core/__init__.py", source)],
+    )
+    return stage
+
+
+def run_gate(stage: Path, *patterns: str) -> subprocess.CompletedProcess[str]:
+    lock = stage.parent / "requirements.txt"
+    return run_script(
+        [sys.executable, "-I", str(CHECK_HOST_PATHS), str(lock), str(stage), *patterns],
+        {"PATH": SYSTEM_PATH},
+    )
+
+
+def leak_lines(result: subprocess.CompletedProcess[str]) -> list[str]:
+    lines = result.stderr.splitlines()
+    assert lines[0] == "ERROR: build-host paths in the payload:", result.stderr
+    return lines[1:]
+
+
+def test_an_upstream_file_verified_against_its_wheel_record_passes_the_gate(
+    tmp_path: Path,
+) -> None:
+    """The CI failure: pydantic_core's SBOM contains /home/runner/work/pydantic/..., and $HOME/
+    is /home/runner/ on the runner. The file is the wheel's own bytes, so it is only noted."""
+    stage = make_stage(tmp_path)
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    sbom = site_packages(stage) / SBOM
+    assert f"    upstream, verbatim from its wheel's RECORD: {sbom}: {CI_HOME}" in (
+        result.stdout.splitlines()
+    )
+    assert (
+        "ok: no build-host paths (upstream files verified against their RECORD: 1)" in result.stdout
+    )
+
+
+def test_an_upstream_binary_verified_against_its_wheel_record_passes_the_gate(
+    tmp_path: Path,
+) -> None:
+    """tokenizers' compiled extension embeds its own CI build path: a shared object byte for byte
+    from its pinned wheel is upstream content like the SBOMs."""
+    stage = make_stage(tmp_path)
+    rel = "tokenizers/tokenizers.abi3.so"
+    data = b"\x7fELF\2\1\1" + bytes(9) + b"/home/runner/work/tokenizers/tokenizers/src/lib.rs\0"
+    extension = site_packages(stage) / rel
+    extension.parent.mkdir(parents=True)
+    extension.write_bytes(data)
+    install(stage, "tokenizers-0.23.1", {}, [f"{rel},{sha256_field(data)},{len(data)}"])
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 0, result.stderr
+    assert f"    upstream, verbatim from its wheel's RECORD: {extension}: {CI_HOME}" in (
+        result.stdout.splitlines()
+    )
+    assert "(upstream files verified against their RECORD: 2)" in result.stdout
+
+
+def test_a_file_that_differs_from_its_record_hash_is_scanned(tmp_path: Path) -> None:
+    stage = make_stage(tmp_path)
+    sbom = site_packages(stage) / SBOM
+    sbom.write_text(SBOM_TEXT.replace("#2.46.4", "#2.46.5"), encoding="utf-8")
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {sbom}: {CI_HOME}"]
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        f"python/lib/python{MINOR}/site-packages/pydantic_core/__init__.pyc",
+        f"python/lib/python{MINOR}/_sysconfigdata__linux_x86_64-linux-gnu.pyc",
+        "python/bin/aiagent",
+    ],
+    ids=["compiled-pyc", "sysconfigdata", "launcher"],
+)
+def test_a_file_the_build_writes_is_scanned_and_names_every_pattern_it_contains(
+    rel: str, tmp_path: Path
+) -> None:
+    """Not in any RECORD (the RECORD lists the deleted .py, not the .pyc compiled from it). The
+    checkout is under $HOME on the runner, so a checkout path matches both patterns."""
+    stage = make_stage(tmp_path)
+    (stage / rel).write_bytes(b"\xf3\r\r\n" + f"{CI_ROOT}src/aiagent/cli/app.py".encode() + b"\0")
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {stage / rel}: {CI_ROOT}, {CI_HOME}"]
+
+
+def test_the_uv_python_path_is_caught(tmp_path: Path) -> None:
+    stage = make_stage(tmp_path)
+    sysconfig = stage / "python" / "lib" / f"python{MINOR}" / "_sysconfigdata_x.pyc"
+    sysconfig.write_text(f"'prefix': '{CI_BASEP}'", encoding="utf-8")
+
+    result = run_gate(stage, CI_BASEP, CI_ROOT)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {sysconfig}: {CI_BASEP}"]
+
+
+def test_a_record_entry_without_a_hash_exempts_nothing(tmp_path: Path) -> None:
+    stage = make_stage(tmp_path)
+    notice = "pydantic_core/NOTICE"
+    install(stage, "other-1.0", {notice: SBOM_TEXT}, [f"{notice},,"])
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {site_packages(stage) / notice}: {CI_HOME}"]
+
+
+def test_a_script_record_entry_resolves_outside_site_packages_and_is_scanned(
+    tmp_path: Path,
+) -> None:
+    """pip lists each console-script launcher it generates (../../../bin/aiagent, or a pinned
+    dependency's such as pygmentize) with a hash of what it wrote: the staging interpreter's
+    path. A launcher that still matches its RECORD row is a leak, not upstream content."""
+    stage = make_stage(tmp_path)
+    launcher = stage / "python" / "bin" / "pygmentize"
+    launcher.write_text(LAUNCHER, encoding="utf-8")
+    install(stage, "pygments-2.21.0", {}, [verbatim_row("../../../bin/pygmentize", LAUNCHER)])
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {launcher}: {CI_ROOT}, {CI_HOME}"]
+
+
+@pytest.mark.parametrize(
+    "lister", ["pygments-2.21.0", "other-1.0"], ids=["own-record", "other-record"]
+)
+@pytest.mark.parametrize("name", ["direct_url.json", "INSTALLER", "REQUESTED"])
+def test_installer_metadata_pip_rehashes_into_record_is_scanned(
+    name: str, lister: str, tmp_path: Path
+) -> None:
+    """pip writes these at install time (direct_url.json names the wheel it installed, on the
+    build host) and records their hashes: they match, but are not what the wheel shipped. That
+    holds whichever RECORD lists them."""
+    stage = make_stage(tmp_path)
+    rel = f"pygments-2.21.0.dist-info/{name}"
+    text = f'{{"url": "file://{CI_ROOT}dist/pygments-2.21.0-py3-none-any.whl"}}'
+    install(stage, lister, {rel: text}, [verbatim_row(rel, text)])
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {site_packages(stage) / rel}: {CI_ROOT}, {CI_HOME}"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 directory anyway")
+def test_a_directory_the_gate_cannot_read_fails_it(tmp_path: Path) -> None:
+    """A tree the gate could not search is not a clean tree."""
+    stage = make_stage(tmp_path)
+    hidden = stage / "python" / "lib" / "hidden"
+    hidden.mkdir()
+    (hidden / "leak.pyc").write_text(CI_ROOT, encoding="utf-8")
+    hidden.chmod(0)
+    try:
+        result = run_gate(stage, *CI_PATTERNS)
+    finally:
+        hidden.chmod(0o755)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"ERROR: cannot search the payload for build-host paths: [Errno 13] Permission denied:"
+        f" '{hidden}'\n"
+    )
+    assert "ok: no build-host paths" not in result.stdout
+
+
+def test_a_symlink_to_a_build_host_path_is_caught(tmp_path: Path) -> None:
+    """The link target itself is payload (tar stores it); it would dangle on every other host."""
+    stage = make_stage(tmp_path)
+    link = stage / "python" / "lib" / "cert.pem"
+    link.symlink_to(f"{CI_BASEP}/ssl/cert.pem")
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {link} -> {CI_BASEP}/ssl/cert.pem: {CI_BASEP}, {CI_HOME}"]
+
+
+def test_a_file_of_the_wheel_built_here_is_scanned_although_it_matches_its_record(
+    tmp_path: Path,
+) -> None:
+    """Only the wheels pinned in requirements.txt are upstream. aiagent's own wheel is built from
+    the checkout on the build host, and hatchling hashes whatever it packs (package data,
+    untracked files under src/, METADATA from README.md) into its RECORD: a checkout path in any
+    of it is a leak."""
+    stage = make_stage(tmp_path)
+    rel = "aiagent/build-info.txt"
+    text = f"built from {CI_ROOT}src\n"
+    install(stage, "aiagent-0.1.0", {rel: text}, [verbatim_row(rel, text)])
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {site_packages(stage) / rel}: {CI_ROOT}, {CI_HOME}"]
+
+
+@pytest.mark.parametrize(
+    "garbage", [b"caf\xe9.txt,,\n", b"x" * 200_000 + b",,\n"], ids=["not-utf-8", "oversized-field"]
+)
+def test_a_record_that_is_not_pips_csv_exempts_nothing_and_does_not_crash_the_gate(
+    garbage: bytes, tmp_path: Path
+) -> None:
+    """RECORD is UTF-8 CSV. One that cannot be read as such vouches for none of its rows, so the
+    files it lists are searched like any other: never a traceback, never an exemption."""
+    stage = make_stage(tmp_path)
+    record = site_packages(stage) / "pydantic_core-2.46.4.dist-info" / "RECORD"
+    with record.open("ab") as f:
+        f.write(garbage)
+
+    result = run_gate(stage, *CI_PATTERNS)
+
+    assert result.returncode == 1
+    assert leak_lines(result) == [f"  {site_packages(stage) / SBOM}: {CI_HOME}"]
+
+
+def test_a_stage_without_any_match_passes(tmp_path: Path) -> None:
+    stage = make_stage(tmp_path)
+
+    result = run_gate(stage, "/home/sparavec/")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "ok: no build-host paths (upstream files verified against their RECORD: 1)" in result.stdout
+    )
+    assert "upstream, verbatim" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["requirements.txt", "stage"],
+        ["stage", CI_HOME],
+        ["requirements.txt", "stage", ""],
+        ["requirements.txt", "stage", CI_HOME, ""],
+        ["", "stage", CI_HOME],
+        ["missing", "stage", CI_HOME],
+        ["requirements.txt", "missing", CI_HOME],
+    ],
+    ids=[
+        "none",
+        "no-pattern",
+        "no-requirements",
+        "empty-pattern",
+        "one-empty-pattern",
+        "empty-requirements",
+        "requirements-not-a-file",
+        "stage-not-a-directory",
+    ],
+)
+def test_check_host_paths_rejects_bad_usage(args: list[str], tmp_path: Path) -> None:
+    make_stage(tmp_path)
+    paths = {"requirements.txt", "stage", "missing"}
+    argv = [str(tmp_path / arg) if arg in paths else arg for arg in args]
+
+    result = run_script([sys.executable, "-I", str(CHECK_HOST_PATHS), *argv], {"PATH": SYSTEM_PATH})
+
+    assert result.returncode == 2
+    assert "check-host-paths.py" in result.stderr

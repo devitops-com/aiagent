@@ -170,6 +170,20 @@ The build then installs to a temp prefix and **audits every module against
 (`tools/package/verify-versions.py`, `STRIP_ABSENT` allow-listed), failing on any
 stale module — the reproducibility guard for the v0.1.0 metadata/code split.
 
+**No build-host paths in the payload.** The sysconfig data goes back to PBS's
+`/install` and the launcher gets a `#!/install/bin/python3.14` placeholder (the
+installer rewrites it); `tools/package/check-host-paths.py` (`tests/test_host_paths.py`)
+then fails the build when a staged file or symlink target contains the uv CPython's
+path, the checkout or `$HOME/`, naming file and pattern. Exempt (only noted): a file
+byte-identical to what a wheel pinned in `requirements.txt` shipped (sha256 match in
+that distribution's `*.dist-info/RECORD`) — on a runner (`HOME=/home/runner`) five
+upstream files name their own CI checkout under `/home/runner/work/`: the SBOMs of
+jiter, pydantic_core, rpds_py and tokenizers, and `tokenizers.abi3.so`. Still scanned
+although a RECORD hashes them: every file of the aiagent wheel (built from the
+checkout; hatchling packs untracked files), pip's `INSTALLER`/`REQUESTED`/
+`direct_url.json`, every `../` entry (pip's launchers); a non-UTF-8-CSV RECORD
+exempts nothing.
+
 **Exact CPython.** The build stages uv's managed interpreter
 (`uv python find --system --managed-python`, which must resolve under `uv python dir`),
 never the project `.venv` (plain `uv python find` returns it, with whatever patch it
@@ -210,7 +224,8 @@ the wget fallback cannot enforce that) and stages under `$TMPDIR` (default `/var
 Repo `devitops-com/aiagent` is **public**; uv-style install:
 `curl -fsSL .../releases/latest/download/install.sh | sh` (honors `AIAGENT_PREFIX`,
 `AIAGENT_VERSION`). CI/non-interactive: `AIAGENT_RELEASE_ASSUME_YES=1`.
-Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh}`, `tools/release/release.sh`, `install.sh`.
+Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-host-paths.py}`,
+`tools/release/release.sh`, `install.sh`.
 
 ## Testing
 
