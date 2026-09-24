@@ -14,7 +14,7 @@ RUFF   := $(if $(wildcard .venv/bin/ruff),.venv/bin/ruff,ruff)
 MYPY   := $(if $(wildcard .venv/bin/mypy),.venv/bin/mypy,mypy)
 BANDIT := $(if $(wildcard .venv/bin/bandit),.venv/bin/bandit,bandit)
 
-.PHONY: help dev-install lock test test-cov lint lint-fix typecheck check package release clean
+.PHONY: help dev-install lock test test-cov lint lint-fix typecheck security check package release clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -23,10 +23,13 @@ help: ## Show this help
 # --- Setup ---
 
 # A fresh venv on exactly .python-version (--clear: a venv left on another patch must
-# not survive; uv's errors stay visible).
-dev-install: ## Set up a fresh .venv on .python-version with aiagent + dev dependencies (editable)
+# not survive; uv's errors stay visible), then exactly the hash-checked versions of
+# requirements-dev.txt (the checks and tests run on what ships; CI installs the same),
+# then aiagent itself, editable, built by the hash-pinned backend of requirements-build.txt.
+dev-install: ## Set up a fresh .venv on .python-version with aiagent + dev dependencies from the locks (editable)
 	uv venv --clear --python $(PYTHON_VERSION) .venv
-	uv pip install --python .venv/bin/python -e ".[dev]"
+	uv pip sync --python .venv/bin/python --require-hashes requirements-dev.txt
+	uv pip install --python .venv/bin/python --no-deps --build-constraints requirements-build.txt -e .
 
 # --python-version pins the resolution to .python-version instead of whatever
 # interpreter happens to be active. Without it, locking from an older venv
@@ -62,7 +65,10 @@ lint-fix: ## Run ruff with auto-fix
 typecheck: ## Run mypy (strict)
 	$(MYPY) src/
 
-check: lint typecheck ## Static checks: ruff + mypy
+security: ## Run bandit
+	$(BANDIT) -r src/ -c pyproject.toml
+
+check: lint typecheck security ## Static checks: ruff + mypy + bandit (what the CI lint job runs)
 
 # --- Packaging ---
 
