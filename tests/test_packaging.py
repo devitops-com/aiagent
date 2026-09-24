@@ -643,3 +643,20 @@ def test_the_report_gives_the_installers_size_not_its_disk_blocks(tmp_path: Path
     assert result.returncode == 0, result.stderr
     out = project / "dist" / "aiagent-install.sh"
     assert f"  {out}  ({out.stat().st_size})" in result.stdout.splitlines()
+
+
+def test_a_module_that_does_not_compile_fails_the_build_with_the_compiler_error(
+    tmp_path: Path,
+) -> None:
+    """The sourceless step deletes every .py next, so a module that failed to compile would just
+    be missing from the bundle."""
+    project, env = fake_build_project(tmp_path)
+    (managed_python(tmp_path) / "lib" / f"python{MINOR}" / "broken.py").write_text("def (:\n")
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert "*** Error compiling" in result.stdout
+    assert "broken.py" in result.stdout
+    assert "SyntaxError" in result.stdout
+    assert "==> Dropping .py sources" not in result.stdout

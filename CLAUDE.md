@@ -142,7 +142,9 @@ X.Y.Z, the single source of truth for the dev venv, CI, the locks'
 libpython** (PBS links it statically into `bin/python3.14`; the shared
 `libpython3.14.so*`, `libpython3.so` and `lib/pkgconfig` are for embedding only and
 dropped — `check-python.sh` fails the build if any `libpython*` is left or any ELF
-NEEDs one, `readelf -d`), **sourceless** (`.pyc` only),
+NEEDs one, `readelf -d`), **sourceless** (`.pyc` only; any compile error fails the
+build — the `.py` files are deleted next, so a module that did not compile would
+silently be missing),
 **zstd -19** payload decompressed by a **bundled static zstd** (target needs no
 zstd; built once from checksummed source and cached per version as
 `.cache/aiagent-build/zstd-<ver>-static-x86_64`, reused only while it reports that

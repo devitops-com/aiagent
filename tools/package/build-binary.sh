@@ -214,8 +214,11 @@ bash "$CHECK_PYTHON" "$STAGE/python" "$PY_VERSION"
     || { echo "ERROR: staged interpreter is not functional" >&2; exit 1; }
 
 # --- 7. Precompile EVERYTHING (unchecked-hash, relative paths) ----------
+# Any compile error fails the build: step 7b deletes every .py, so a module that did not
+# compile would silently be missing from the bundle. Should a dependency ever ship a file
+# that cannot compile and is never imported, exclude that path (-x), not every error.
 echo "==> Precompiling all modules"
-"$PY" -m compileall -q -f -j 0 -s "$STAGE/python" --invalidation-mode unchecked-hash "$STAGE/python" >/dev/null 2>&1 || true
+"$PY" -m compileall -q -f -j 0 -s "$STAGE/python" --invalidation-mode unchecked-hash "$STAGE/python"
 
 # --- 7b. Drop .py sources: relocate to sourceless .pyc, delete .py ------
 echo "==> Dropping .py sources (sourceless .pyc)"
