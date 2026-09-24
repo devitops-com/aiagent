@@ -144,7 +144,10 @@ libpython** (PBS links it statically into `bin/python3.14`; the shared
 dropped — `check-python.sh` fails the build if any `libpython*` is left or any ELF
 NEEDs one, `readelf -d`), **sourceless** (`.pyc` only),
 **zstd -19** payload decompressed by a **bundled static zstd** (target needs no
-zstd), SHA256 integrity, `-I` (isolated) launcher — ignores `PYTHONPATH`,
+zstd; built once from checksummed source and cached per version as
+`.cache/aiagent-build/zstd-<ver>-static-x86_64`, reused only while it reports that
+version and has no program interpreter), SHA256 integrity, `-I` (isolated)
+launcher — ignores `PYTHONPATH`,
 `PYTHONHOME`, user site and cwd, so a user skill's `<module>:<attr>` metric can't
 come from `PYTHONPATH`. `make lock` first. Prefix via `AIAGENT_PREFIX` or
 `-- --prefix DIR` (default `~/.local`; `--target` is makeself's own option and is

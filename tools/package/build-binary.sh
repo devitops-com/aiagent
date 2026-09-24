@@ -47,9 +47,9 @@ OUT="$DIST/$APP-install.sh"
 REQ="$ROOT/requirements.txt"
 BUILD_REQ="$ROOT/requirements-build.txt"
 CACHE="$ROOT/.cache/aiagent-build"
-ZSTD_BIN="$CACHE/zstd-static-$ARCH"
 ZSTD_VERSION="1.5.6"
 ZSTD_SHA256="8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1"
+ZSTD_BIN="$CACHE/zstd-$ZSTD_VERSION-static-$ARCH"   # versioned: a bump never reuses the old one
 
 # Distributions the build deliberately removes from the bundle. Named once here
 # so the removal (step 5c) and the version audit's allow-list (step 12) cannot
@@ -246,7 +246,16 @@ PYEOF
     || { echo "ERROR: sourceless bundle not importable" >&2; exit 1; }
 
 # --- 8. Obtain a static zstd (cached across builds) --------------------
-if ! "$ZSTD_BIN" --version >/dev/null 2>&1; then
+# Reused only while it is the pinned version and static (no program interpreter);
+# otherwise rebuilt from the checksummed source.
+zstd_ok() {
+    local out
+    out="$("$1" --version 2>/dev/null)" || return 1
+    case "$out" in *" v$ZSTD_VERSION,"*) ;; *) return 1 ;; esac
+    readelf -h "$1" >/dev/null 2>&1 || return 1
+    case "$(readelf -lW "$1" 2>/dev/null)" in *'Requesting program interpreter'*) return 1 ;; esac
+}
+if ! zstd_ok "$ZSTD_BIN"; then
     echo "==> Building static zstd $ZSTD_VERSION (cached at $ZSTD_BIN)"
     ztmp="$(mktemp -d -p "$WORK")"
     curl -fsSL -o "$ztmp/z.tgz" \
@@ -260,6 +269,7 @@ if ! "$ZSTD_BIN" --version >/dev/null 2>&1; then
     strip "$ztmp/zstd-${ZSTD_VERSION}/programs/zstd"
     cp "$ztmp/zstd-${ZSTD_VERSION}/programs/zstd" "$ZSTD_BIN"
     rm -rf "$ztmp"
+    zstd_ok "$ZSTD_BIN" || { echo "ERROR: $ZSTD_BIN is not a static zstd $ZSTD_VERSION" >&2; exit 1; }
 fi
 cp "$ZSTD_BIN" "$MKDIR/zstd"
 chmod +x "$MKDIR/zstd"
@@ -414,7 +424,7 @@ fi
 echo "    ok (--help, version, hermetic, modes, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
 
 # --- 13. Report --------------------------------------------------------
-SIZE="$(du -h "$OUT" | cut -f1)"
+SIZE="$(du -h --apparent-size "$OUT" | cut -f1)"   # not the blocks XFS preallocated
 echo ""
 echo "Built installer:"
 echo "  $OUT  ($SIZE)"
