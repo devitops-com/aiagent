@@ -30,9 +30,13 @@ dev-install: ## Set up .venv with aiagent + dev dependencies (editable)
 # uv keeps the pins already in the lock files, so plain `make lock` never moves a
 # locked package. LOCK_ARGS passes upgrade flags through, e.g. past an advisory:
 #   make lock LOCK_ARGS='--upgrade-package anyio'   (or --upgrade: re-resolve all)
-lock: ## Regenerate requirements.txt and requirements-dev.txt from pyproject.toml (LOCK_ARGS: extra uv flags)
+# requirements-build.txt pins the build backend (pyproject [build-system]) that
+# builds the shipped wheel.
+lock: ## Regenerate requirements.txt, requirements-dev.txt and requirements-build.txt from pyproject.toml (LOCK_ARGS: extra uv flags)
 	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --generate-hashes -o requirements.txt $(LOCK_ARGS)
 	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --extra dev --generate-hashes -o requirements-dev.txt $(LOCK_ARGS)
+	$(PYTHON) -c 'import tomllib; print(*tomllib.load(open("pyproject.toml", "rb"))["build-system"]["requires"], sep="\n")' | \
+		uv pip compile - --python-version $(PYTHON_VERSION) --generate-hashes -o requirements-build.txt $(LOCK_ARGS)
 
 # --- Testing ---
 

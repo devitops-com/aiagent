@@ -10,7 +10,8 @@
 # The payload is owned by root:root with modes u+rwX,go+rX,go-w.
 #
 # Build deps: uv, makeself, curl, gcc/make (to build the static zstd once).
-# Run `make lock` first (produces requirements.txt for the constraints step).
+# Run `make lock` first (produces requirements.txt for the constraints step, and
+# requirements-build.txt, which pins the build backend that builds the aiagent wheel).
 set -euo pipefail
 export PYTHONNOUSERSITE=1   # hermetic build: never satisfy deps from the user site
 
@@ -32,6 +33,7 @@ CONSTRAINTS="$DIST/constraints.txt"
 STARTUP_IN="$ROOT/tools/package/startup.sh.in"
 OUT="$DIST/$APP-install.sh"
 REQ="$ROOT/requirements.txt"
+BUILD_REQ="$ROOT/requirements-build.txt"
 CACHE="$ROOT/.cache/aiagent-build"
 ZSTD_BIN="$CACHE/zstd-static-$ARCH"
 ZSTD_VERSION="1.5.6"
@@ -58,6 +60,7 @@ for h in "$(dirname "$(readlink -f "$(command -v makeself)")")/makeself-header.s
 done
 [ -n "$MAKESELF_HEADER" ] || { echo "ERROR: cannot find makeself-header.sh" >&2; exit 1; }
 [ -f "$REQ" ] || { echo "ERROR: $REQ missing — run 'make lock' first" >&2; exit 1; }
+[ -f "$BUILD_REQ" ] || { echo "ERROR: $BUILD_REQ missing — run 'make lock' first" >&2; exit 1; }
 if grep -qiE '^(torch|nvidia-)' "$REQ"; then
     echo "ERROR: torch/nvidia-* in requirements.txt; aiagent must stay torch-free" >&2; exit 1
 fi
@@ -75,8 +78,10 @@ grep -qxF 'TMPROOT=\${TMPDIR:=/var/tmp}' "$HEADER" \
     || { echo "ERROR: $MAKESELF_HEADER: no 'TMPROOT=\${TMPDIR:=/tmp}' line to patch" >&2; exit 1; }
 
 # --- 2. Build the aiagent wheel -----------------------------------------
-echo "==> Building $APP wheel"
-uv build --wheel -o "$DIST" >/dev/null
+# The build backend (hatchling and its dependencies) comes hash-checked from
+# requirements-build.txt, not freshly resolved from the index: its code writes the wheel.
+echo "==> Building $APP wheel (hash-pinned build backend)"
+uv build --wheel --build-constraints "$BUILD_REQ" --require-hashes -o "$DIST" >/dev/null
 WHEEL="$(ls "$DIST"/${APP}-${VERSION}-*.whl)"
 
 # --- 3. Pin dependency versions from the project lock -------------------
