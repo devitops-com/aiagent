@@ -305,7 +305,8 @@ def make_extraction_dir(tmp_path: Path, python: str = "echo bundled python\n") -
     is the body of the fake bundled interpreter (the installer runs it once before installing).
     """
     here = tmp_path / "extracted"
-    write_program(here / "zstd", 'cat "$2"\n')  # called as: zstd -dc bundle.tar.zst
+    # called as: zstd --version (does it run here?), then zstd -dc bundle.tar.zst
+    write_program(here / "zstd", '[ "$1" = --version ] || cat "$2"\n')
     members = {
         "python/": None,
         "python/bin/": None,
@@ -438,28 +439,28 @@ def test_startup_refuses_an_empty_prefix(tmp_path: Path, short: Path) -> None:
 
 def test_startup_refuses_a_prefix_whose_shebang_is_too_long(tmp_path: Path) -> None:
     prefix = tmp_path / ("p" * 120)
-    prefix.mkdir()
 
     result = run_startup(make_extraction_dir(tmp_path), tmp_path, AIAGENT_PREFIX=str(prefix))
 
     assert result.returncode == 1
     assert "install path too long" in result.stderr
     assert "AIAGENT_PREFIX" in result.stderr
-    assert list(prefix.iterdir()) == []  # refused before anything was unpacked
+    assert not prefix.exists()  # refused before anything was created
 
 
 @pytest.mark.parametrize("blank", [" ", "\t", "\n"], ids=["space", "tab", "newline"])
 def test_startup_refuses_a_prefix_with_whitespace(blank: str, tmp_path: Path, short: Path) -> None:
     """The kernel splits a shebang at whitespace: the launcher could never start."""
-    prefix = short / f"my{blank}tools"
-    prefix.mkdir()
+    parent = short / f"my{blank}tools"
 
-    result = run_startup(make_extraction_dir(tmp_path), tmp_path, AIAGENT_PREFIX=str(prefix))
+    result = run_startup(
+        make_extraction_dir(tmp_path), tmp_path, AIAGENT_PREFIX=str(parent / "aiagent")
+    )
 
     assert result.returncode == 1
     assert "whitespace" in result.stderr
     assert "AIAGENT_PREFIX" in result.stderr
-    assert list(prefix.iterdir()) == []  # refused before anything was unpacked
+    assert not parent.exists()  # refused before anything was created
 
 
 @pytest.mark.parametrize("how", ["env", "option"])
@@ -560,7 +561,7 @@ def test_startup_works_when_the_extraction_dir_is_mounted_noexec(
 def test_startup_refuses_an_interpreter_that_cannot_run_here_and_keeps_the_old_install(
     tmp_path: Path, short: Path
 ) -> None:
-    """E.g. a musl host (the bundled CPython needs glibc) or a noexec prefix."""
+    """E.g. a musl host (the bundled CPython needs glibc)."""
     prefix = short / "prefix"
     old = prefix / "lib" / "aiagent" / "bin" / "aiagent"
     write_program(old, "echo old\n")
@@ -570,6 +571,31 @@ def test_startup_refuses_an_interpreter_that_cannot_run_here_and_keeps_the_old_i
 
     assert result.returncode == 1
     assert "cannot run on this host" in result.stderr
+    assert old.read_text() == "#!/bin/sh\necho old\n"
+    assert [p.name for p in prefix.iterdir()] == ["lib"]  # no stage left, nothing added
+
+
+@pytest.mark.skipif(not userns_available("--mount"), reason="needs user + mount namespaces")
+def test_startup_refuses_a_prefix_mounted_noexec_and_keeps_the_old_install(
+    tmp_path: Path, short: Path
+) -> None:
+    """The stage sits under the prefix, so there the bundled zstd is the first thing that cannot
+    run: the installer says why instead of failing inside tar."""
+    here, prefix = make_extraction_dir(tmp_path), short / "prefix"
+    old = prefix / "lib" / "aiagent" / "bin" / "aiagent"
+    write_program(old, "echo old\n")
+    script = (
+        'mount --bind "$1" "$1" && mount -o remount,bind,noexec "$1" '
+        "&& umask 077 && exec sh ./startup.sh"
+    )
+    command = [str(UNSHARE), "--user", "--map-root-user", "--mount", "sh", "-c", script]
+    env = {"HOME": str(tmp_path / "home"), "PATH": SYSTEM_PATH, "AIAGENT_PREFIX": str(prefix)}
+
+    result = run_script([*command, "sh", str(prefix)], env, cwd=here)
+
+    assert result.returncode == 1
+    assert "cannot run on this host" in result.stderr
+    assert "not mounted noexec" in result.stderr
     assert old.read_text() == "#!/bin/sh\necho old\n"
     assert [p.name for p in prefix.iterdir()] == ["lib"]  # no stage left, nothing added
 

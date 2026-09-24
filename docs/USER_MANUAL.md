@@ -666,11 +666,15 @@ bundle stays torch-free.
 The payload is owned by `root:root` with no group or other write bits, and the
 installer extracts it without restoring owners, so the installed tree belongs to
 whoever installs and is readable by everyone. It refuses a prefix with whitespace
-or one too long for a `#!` line (before anything is unpacked), resolves a relative
-prefix against the directory it was started from, checks that the bundled Python
-runs on the host before replacing an existing install, and works when its temp
-directory is mounted `noexec`. It unpacks under `$TMPDIR`, by default `/var/tmp`
-(never `/tmp`).
+or one too long for a `#!` line (before anything is created), resolves a relative
+prefix against the directory it was started from, checks that the bundled zstd
+and Python run on the host (not musl, prefix not mounted `noexec`) before replacing
+an existing install, and works when its temp directory is mounted `noexec`. It
+unpacks under `$TMPDIR`, by default `/var/tmp` (never `/tmp`). Directories that
+already exist keep their modes: installers up to v0.3.1 created missing prefix
+directories `0700`, so after upgrading a system install such an installer made in a
+new directory (e.g. `/opt/aiagent`), run `sudo chmod go+rx` on the prefix and its
+`bin`, `lib`, `share` and `share/doc`, or reinstall into a fresh prefix.
 
 ```bash
 sh ./aiagent-install.sh                                  # -> ~/.local
@@ -680,8 +684,9 @@ sh ./aiagent-install.sh --check                          # verify integrity only
 aiagent --help
 ```
 
-`--target DIR` (without `--`) is makeself's own option: it only unpacks the raw
-payload into `DIR`. Use `AIAGENT_PREFIX` or `-- --prefix DIR`.
+`--target DIR` (without `--`) is makeself's own option: it keeps the raw payload
+(~63 MB) in `DIR` and still installs to the default prefix. Choose the prefix with
+`AIAGENT_PREFIX` or `-- --prefix DIR`; `-- --target` is refused.
 
 Build deps: `uv`, `makeself`, `curl`, `readelf` (binutils), and a C toolchain (to build the static zstd
 once; it's cached under `.cache/`, per version). Run `make lock` before `make package`. The

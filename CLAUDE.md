@@ -155,8 +155,9 @@ version and has no program interpreter), SHA256 integrity, `-I` (isolated)
 launcher — ignores `PYTHONPATH`,
 `PYTHONHOME`, user site and cwd, so a user skill's `<module>:<attr>` metric can't
 come from `PYTHONPATH`. `make lock` first. Prefix via `AIAGENT_PREFIX` or
-`-- --prefix DIR` (default `~/.local`; `--target` is makeself's own option and is
-refused). Keeps numpy/tokenizers/tiktoken for future RAG; drops Tcl/Tk, hf_xet,
+`-- --prefix DIR` (default `~/.local`; `-- --target` is refused, and plain `--target DIR`
+is makeself's own: it keeps the raw payload in DIR and still installs to the default
+prefix). Keeps numpy/tokenizers/tiktoken for future RAG; drops Tcl/Tk, hf_xet,
 and the **AWS/Bedrock subtree** (boto3 + botocore + s3transfer + deps — litellm
 makes boto3 a core dep since 1.98 but imports it
 lazily, and the local router never takes that path); must stay **torch-free**
@@ -201,10 +202,11 @@ build then stops with uv's own error and says so.
 built one): payload `root:root`, no group/other write (build gate), extracted with
 `--no-same-owner` under `umask 022` so a root install is root-owned and
 world-readable; relative prefix → `$USER_PWD`, quoted `~` → `$HOME`, whitespace or
-over-long (127-byte shebang) prefix refused **before** unpacking; the staged
-interpreter must run (`-I -c 'import aiagent'`) before an existing install is
-replaced; makeself runs `sh ./startup.sh` and zstd runs from the stage, so a
-noexec `$TMPDIR` works; the extraction dir defaults to `/var/tmp` (patched
+over-long (127-byte shebang) prefix refused **before** creating anything; the staged
+zstd (`--version`) and interpreter (`-I -c 'import aiagent'`) must run before an
+existing install is replaced (a `noexec` prefix or musl: exit 1 with the reason);
+makeself runs `sh ./startup.sh` and zstd runs from the stage, so a noexec `$TMPDIR`
+works; the extraction dir defaults to `/var/tmp` (patched
 makeself header), never `/tmp`. Smoke test also checks `aiagent version` ==
 pyproject version, with a hostile `PYTHONPATH`/`PYTHONHOME` too, and file modes.
 `install.sh` with `AIAGENT_VERIFY=1` runs the installer only after
