@@ -11,14 +11,18 @@
 # Environment:
 #   AIAGENT_PREFIX   install prefix (default ~/.local); honored by the installer
 #   AIAGENT_VERSION  release tag to install (default: latest), e.g. v0.1.0
+#   TMPDIR           where the installer is downloaded and unpacked (default
+#                    /var/tmp, never /tmp: that is often a small RAM-backed tmpfs)
 #
 # Custom prefix with the pipe form:
-#   curl -fsSL .../install.sh | AIAGENT_PREFIX=/usr/local sh
+#   curl -fsSL .../install.sh | sudo AIAGENT_PREFIX=/usr/local sh
 set -eu
 
 REPO="devitops-com/aiagent"
 ASSET="aiagent-install.sh"
 VERSION="${AIAGENT_VERSION:-latest}"
+TMPDIR="${TMPDIR:-/var/tmp}"
+export TMPDIR   # the makeself installer unpacks its payload under $TMPDIR too
 
 # The bundle is a linux-x86_64 build; fail fast anywhere else.
 OS="$(uname -s)"
@@ -28,8 +32,11 @@ if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
     exit 1
 fi
 
+# HTTPS only, redirects included (GitHub redirects release downloads to its CDN).
+# wget has no option for that (--https-only applies to recursive downloads only),
+# so it is just the fallback for hosts without curl.
 if command -v curl >/dev/null 2>&1; then
-    dl() { curl -fsSL "$1" -o "$2"; }
+    dl() { curl --proto '=https' --tlsv1.2 -fsSL "$1" -o "$2"; }
 elif command -v wget >/dev/null 2>&1; then
     dl() { wget -qO "$2" "$1"; }
 else
@@ -43,7 +50,7 @@ else
     URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 fi
 
-TMP="$(mktemp)"
+TMP="$(mktemp -p "$TMPDIR" aiagent-install.XXXXXX)"
 trap 'rm -f "$TMP"' EXIT INT TERM
 
 echo "aiagent: downloading ${URL}" >&2

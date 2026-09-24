@@ -11,8 +11,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   files, so a plain `make lock` never moved anyio. Pass the upgrade through:
   `make lock LOCK_ARGS='--upgrade-package anyio'` (or `--upgrade` to re-resolve
   everything).
+- **The installer's prefix option is `--prefix DIR`** (`sh aiagent-install.sh
+  -- --prefix DIR`, or `--prefix=DIR`); `AIAGENT_PREFIX` works as before. The old
+  `--target` was also makeself's own option: without the `--` it only unpacked
+  the raw payload into DIR and installed to `~/.local`. `--target`, any other
+  unknown option and a `--prefix` without a value now stop with the usage and
+  exit 2 instead of being ignored.
+- **The installed launcher runs Python isolated (`-I`, was `-s`).** A host
+  `PYTHONPATH` no longer goes ahead of the bundled packages, and a stray
+  `PYTHONHOME` no longer stops aiagent from starting. As a consequence a user
+  skill's `metric: <module>:<attr>` can no longer name a module that is only
+  reachable through `PYTHONPATH`: keep the metric in the skill module
+  (`skill:<attr>`) or use one the bundle ships (`aiagent.metrics.*`).
+
+### Fixed
+- **A relative, quoted-`~` or whitespace prefix no longer "succeeds" without a
+  usable install.** A relative prefix is resolved against the directory the
+  installer was started from (it used to land in makeself's deleted temp dir),
+  `~` against `$HOME`, and a prefix with whitespace or one too long for a `#!`
+  line is refused with exit 1 before anything is unpacked (the length check used
+  to run after the old install was already replaced). An empty prefix is refused.
+- **The installer works where the temp directory is mounted `noexec`** (as on
+  CIS-hardened hosts). makeself runs the startup script with `sh`, and the
+  bundled zstd runs from the stage under the prefix. The installer and
+  `install.sh` unpack and download under `$TMPDIR`, by default `/var/tmp` instead
+  of `/tmp`, which is often a small RAM-backed tmpfs.
+- **An upgrade keeps the working install when the new one cannot run here**
+  (musl, a `noexec` prefix): the bundled Python is started once before the old
+  tree is replaced, and the installer exits 1 with the reason.
 
 ### Security
+- **A root or system install is owned by root and not group-writable.** The
+  payload carried the build user's uid/gid and group-writable modes, which tar
+  restores when run as root, so on an image install (`AIAGENT_PREFIX=/usr/local`)
+  whichever account had uid 1000 could rewrite code that root runs; the new
+  prefix directories were also created `0700` under makeself's umask. The payload
+  is now `root:root` with `go-w` (the build fails otherwise), and the installer
+  extracts with `--no-same-owner` under `umask 022`: the tree belongs to whoever
+  installs and every user can read and run it. Images built with an older
+  installer keep the uid-1000 tree until rebuilt.
+- **`install.sh` downloads with `curl --proto '=https' --tlsv1.2`**, so no
+  redirect can downgrade the download to plain HTTP. The wget fallback (hosts
+  without curl) cannot enforce this.
 - **anyio 4.14.1 -> 4.15.1** in both locks (typing-extensions 4.15.0 -> 4.16.0
   comes with it), past CVE-2026-63374, CVE-2026-64847 and CVE-2026-63349 (fixed
   in 4.14.2). v0.3.1 bundles 4.14.1; the daily dependency audit has failed on it

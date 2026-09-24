@@ -513,7 +513,10 @@ correct in both modes.
 
 A skill selects its metric via the `metric:` key in `SKILL.md`
 (`skill:<attr>` or `<module>:<attr>`); with no `metric` declared, `field_accuracy`
-is the default.
+is the default. The installed aiagent runs its Python in isolated mode and ignores
+`PYTHONPATH`, so there `<module>` must be one the bundle ships (such as
+`aiagent.metrics.extraction`); keep your own metric in the skill module and use
+`skill:<attr>`.
 
 ---
 
@@ -639,16 +642,32 @@ relocatable CPython 3.14 with aiagent and every dependency,
 **sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The heavy
 tree is **zstd -19** compressed and decompressed at install time by a **bundled
 static zstd**, so the target host needs neither Python nor zstd. makeself adds a
-**SHA256** integrity check, and the `-s` launcher keeps it hermetic (ignores the
-host user site). ML libraries (numpy, tokenizers, tiktoken) are kept for future
-RAG features; the bundle stays torch-free.
+**SHA256** integrity check. The launcher runs the bundled Python in isolated mode
+(`-I`), so `PYTHONPATH`, `PYTHONHOME`, the user site and the current directory
+never reach it (a skill's `<module>:<attr>` metric therefore cannot come from
+`PYTHONPATH`; see [Metrics](#metrics)). Only `aiagent` goes on `PATH`. ML
+libraries (numpy, tokenizers, tiktoken) are kept for future RAG features; the
+bundle stays torch-free.
+
+The payload is owned by `root:root` with no group or other write bits, and the
+installer extracts it without restoring owners, so the installed tree belongs to
+whoever installs and is readable by everyone. It refuses a prefix with whitespace
+or one too long for a `#!` line (before anything is unpacked), resolves a relative
+prefix against the directory it was started from, checks that the bundled Python
+runs on the host before replacing an existing install, and works when its temp
+directory is mounted `noexec`. It unpacks under `$TMPDIR`, by default `/var/tmp`
+(never `/tmp`).
 
 ```bash
-./aiagent-install.sh                             # -> ~/.local
-AIAGENT_PREFIX=/usr/local ./aiagent-install.sh   # system / image install
-sh ./aiagent-install.sh --check                  # verify integrity only
+sh ./aiagent-install.sh                                  # -> ~/.local
+sh ./aiagent-install.sh -- --prefix ~/opt/aiagent        # or AIAGENT_PREFIX=~/opt/aiagent
+sudo AIAGENT_PREFIX=/usr/local sh ./aiagent-install.sh   # system / image install
+sh ./aiagent-install.sh --check                          # verify integrity only
 aiagent --help
 ```
+
+`--target DIR` (without `--`) is makeself's own option: it only unpacks the raw
+payload into `DIR`. Use `AIAGENT_PREFIX` or `-- --prefix DIR`.
 
 Build deps: `uv`, `makeself`, `curl`, and a C toolchain (to build the static zstd
 once; it's cached under `.cache/`). Run `make lock` before `make package`.
