@@ -15,8 +15,10 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
@@ -176,7 +178,7 @@ def test_make_dev_install_recreates_the_venv_on_exactly_the_pinned_cpython(tmp_p
     assert venv[0] == "venv"
     assert "--clear" in venv
     assert venv[venv.index("--python") + 1] == PINNED_PYTHON
-    assert installs and all(call[:2] == ["pip", "install"] for call in installs)
+    assert [call[:2] for call in installs] == [["pip", "sync"], ["pip", "install"]]
 
 
 def test_make_dev_install_stops_with_uvs_reason_when_it_cannot_make_the_venv(
@@ -189,6 +191,26 @@ def test_make_dev_install_stops_with_uvs_reason_when_it_cannot_make_the_venv(
     assert result.returncode != 0
     assert UV_CANNOT_DOWNLOAD in result.stderr.splitlines()
     assert [call[0] for call in calls(tmp_path, "uv")] == ["venv"]
+
+
+def makefile_recipe(target: str) -> tuple[str, str]:
+    """The prerequisites line and the recipe of ``target`` in the Makefile."""
+    text = (ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(rf"^{target}:(.*)\n((?:\t.*\n)*)", text, re.MULTILINE)
+    assert match is not None, f"no {target} target"
+    return match.group(1), match.group(2)
+
+
+def test_make_dev_install_installs_the_hash_locked_dev_dependencies() -> None:
+    """The checks and tests run on exactly what the locks pin, not on a fresh resolve; aiagent
+    itself is built by the hash-pinned backend."""
+    _, recipe = makefile_recipe("dev-install")
+
+    sync, install = (line for line in recipe.splitlines() if "uv pip" in line)
+    assert "--require-hashes requirements-dev.txt" in sync
+    assert {"--no-deps", "--build-constraints", "requirements-build.txt", "-e", "."} <= set(
+        install.split()
+    )
 
 
 # ------------------------------------------------------------- build-binary.sh with fake tools
@@ -758,3 +780,64 @@ def test_a_home_of_slash_is_not_searched_for(tmp_path: Path) -> None:
     result = run_build(project, {**env, "HOME": "/"})
 
     assert result.returncode == 0, result.stderr
+
+
+# ----------------------------------------------------------------------------------- workflows
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+PINNED_ACTION = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
+
+
+def workflow(name: str) -> dict[str, Any]:
+    data: dict[Any, Any] = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+    if True in data:  # YAML 1.1 reads a bare `on:` key as the boolean true
+        data["on"] = data.pop(True)
+    return data
+
+
+def steps(job: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(job["steps"])
+
+
+def step_using(job: dict[str, Any], action: str) -> list[dict[str, Any]]:
+    return [step for step in steps(job) if str(step.get("uses", "")).startswith(action)]
+
+
+def run_lines(job: dict[str, Any]) -> list[str]:
+    return [line.strip() for step in steps(job) for line in str(step.get("run", "")).splitlines()]
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in WORKFLOWS.glob("*.yml")))
+def test_every_action_is_pinned_by_commit_sha_and_checkout_keeps_no_token(name: str) -> None:
+    """A tag can be moved to other code; the token in .git/config would be readable by every
+    later step, including the third-party code pip installs."""
+    for job in workflow(name)["jobs"].values():
+        for step in steps(job):
+            uses = step.get("uses")
+            if uses is None:
+                continue
+            assert PINNED_ACTION.match(uses), f"{name}: {uses} is not pinned by a commit SHA"
+            if uses.startswith("actions/checkout@"):
+                assert step["with"]["persist-credentials"] is False, name
+
+
+@pytest.mark.parametrize("job", ["lint", "test"])
+def test_ci_installs_exactly_the_hash_locked_dev_dependencies(job: str) -> None:
+    """What `make dev-install` installs: CI checks and tests what the locks pin."""
+    ci_job = workflow("ci.yml")["jobs"][job]
+    lines = run_lines(ci_job)
+
+    lock = lines.index("python -m pip install --require-hashes --no-deps -r requirements-dev.txt")
+    assert lines[lock + 1] == "python -m pip install --no-deps -e ."
+    assert not [line for line in lines if "[dev]" in line]
+    (setup,) = step_using(ci_job, "actions/setup-python@")
+    assert setup["with"]["cache-dependency-path"] == "requirements-dev.txt"
+
+
+def test_make_check_runs_what_the_ci_lint_job_runs() -> None:
+    result = run_script(["make", "-n", "check"], {"PATH": SYSTEM_PATH}, ROOT)
+
+    assert result.returncode == 0, result.stderr
+    local = [line.removeprefix(".venv/bin/") for line in result.stdout.splitlines()]
+    lint = workflow("ci.yml")["jobs"]["lint"]
+    assert local == [line for line in run_lines(lint) if line and not line.startswith("python ")]

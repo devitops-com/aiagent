@@ -41,6 +41,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   skill's `metric: <module>:<attr>` can no longer name a module that is only
   reachable through `PYTHONPATH`: keep the metric in the skill module
   (`skill:<attr>`) or use one the bundle ships (`aiagent.metrics.*`).
+- **`make dev-install` and CI install the hashed dev lock.** Both resolved
+  `.[dev]` afresh, so the checks and tests ran on other dependency versions than
+  the installer ships (a fresh resolve already got a newer anyio). They now
+  install exactly `requirements-dev.txt` (`--require-hashes`), then aiagent itself
+  `--no-deps`; `make dev-install` builds it with the hash-pinned backend of
+  `requirements-build.txt`.
+- **`make check` also runs bandit** (new `make security`), so it runs exactly what
+  the CI lint job runs.
 - **The test suite keeps its temp files out of `/tmp`.** Each run gets a private
   directory under `/var/tmp` for `tmp_path` and `TMPDIR`, removed when the run
   ends, pass or fail; it used to leave `/tmp/pytest-of-<user>` behind.
@@ -85,6 +93,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/dev/tty: No such device or address`.
 
 ### Security
+- **CI pins every GitHub Action by commit SHA** (with the release it stands for),
+  so a moved tag cannot change what runs, and checks out with
+  `persist-credentials: false`, so no later step (such as the third-party code pip
+  installs) can read the job's token from `.git/config`.
 - **The installer no longer carries the build host's paths.** A locally built
   payload named the maintainer's home directory in the bundled interpreter's
   sysconfig data and in the launcher's `#!` line (which the installer rewrites).

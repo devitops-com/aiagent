@@ -93,7 +93,9 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 
 ## Commands
 
-`make dev-install` (fresh `.venv` on exactly `.python-version`) · `make check` (ruff + mypy --strict) ·
+`make dev-install` (fresh `.venv` on exactly `.python-version`: the hash-locked
+`requirements-dev.txt`, then aiagent editable `--no-deps`, as CI installs) ·
+`make check` (ruff + mypy --strict + bandit: exactly the CI lint job, a test compares them) ·
 `make test` (hermetic) ·
 `make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging; writes the hashed
 `requirements.txt`, `requirements-dev.txt` and `requirements-build.txt`; keeps existing pins —

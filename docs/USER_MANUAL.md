@@ -617,8 +617,8 @@ fresh via `--new`.
 ## Development
 
 ```bash
-make dev-install     # fresh .venv on .python-version with aiagent + dev deps (uv, editable)
-make check           # ruff + mypy (strict)
+make dev-install     # fresh .venv on .python-version: the locked dev deps + aiagent (uv, editable)
+make check           # ruff + mypy (strict) + bandit, as the CI lint job
 make test            # pytest (hermetic; live devai tests are opt-in: -m live)
 make test-cov        # pytest with coverage gate (85%)
 make lock            # regenerate requirements*.txt (needed before `make package`)
@@ -628,7 +628,9 @@ make release         # tag + publish GitHub release with the installer asset
 ```
 
 Requires `uv`, which also installs Python 3.14.7, the exact version in
-`.python-version`. The tests fail on any other interpreter (a `.venv` from before a
+`.python-version`. `make dev-install` and CI install exactly the hash-checked
+versions of `requirements-dev.txt`, so the checks and tests run on what the
+installer ships. The tests fail on any other interpreter (a `.venv` from before a
 pin bump): re-run `make dev-install`, which recreates `.venv`. A patch bump of
 `.python-version` may need a newer uv, which only knows the CPython patches
 published before it. Tests are hermetic by default: LLM-driven CLI
