@@ -641,7 +641,7 @@ tests (`pytest -m live`) must run inside the `devai-net` network.
 ## Packaging
 
 `make package` produces `dist/aiagent-install.sh` — a single **makeself**
-self-extracting, run-once installer (**linux-x86_64**, ~71 MB). It carries a
+self-extracting, run-once installer (**linux-x86_64**, ~63 MB). It carries a
 relocatable CPython (exactly the X.Y.Z in `.python-version`, now 3.14.7; the build
 fails on any other) with aiagent and every dependency,
 **sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The
