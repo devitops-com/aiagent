@@ -681,7 +681,9 @@ aiagent wheel is built by the hash-pinned backend of `requirements-build.txt`
 dependencies are installed as hash-checked wheels, exactly the pins of
 `requirements.txt` and nothing else (`--no-deps`); the build fails when `pip check`
 finds the lock incomplete (a dependency added to `pyproject.toml` without
-`make lock`).
+`make lock`). All temporary files go to a private directory under `/var/tmp`
+(never `/tmp`), removed when the build ends, and the smoke test ignores your
+`~/.config/aiagent` and `AIAGENT_*` settings.
 
 ---
 
