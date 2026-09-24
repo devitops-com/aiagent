@@ -49,10 +49,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   everything).
 - **The installer's prefix option is `--prefix DIR`** (`sh aiagent-install.sh
   -- --prefix DIR`, or `--prefix=DIR`); `AIAGENT_PREFIX` works as before. The old
-  `--target` was also makeself's own option: without the `--` it only unpacked
-  the raw payload into DIR and installed to `~/.local`. `--target`, any other
-  unknown option and a `--prefix` without a value now stop with the usage and
-  exit 2 instead of being ignored.
+  `-- --target DIR` clashed with makeself's own `--target DIR`, which (without
+  the `--`) keeps the raw payload in DIR and still installs to the default
+  prefix. `-- --target`, any other unknown option and a `--prefix` without a
+  value now stop with the usage and exit 2 instead of being ignored.
 - **The installed launcher runs Python isolated (`-I`, was `-s`).** A host
   `PYTHONPATH` no longer goes ahead of the bundled packages, and a stray
   `PYTHONHOME` no longer stops aiagent from starting. As a consequence a user
@@ -80,7 +80,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   usable install.** A relative prefix is resolved against the directory the
   installer was started from (it used to land in makeself's deleted temp dir),
   `~` against `$HOME`, and a prefix with whitespace or one too long for a `#!`
-  line is refused with exit 1 before anything is unpacked (the length check used
+  line is refused with exit 1 before anything is created (the length check used
   to run after the old install was already replaced). An empty prefix is refused.
 - **The installer works where the temp directory is mounted `noexec`** (as on
   CIS-hardened hosts). makeself runs the startup script with `sh`, and the
@@ -88,8 +88,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `install.sh` unpack and download under `$TMPDIR`, by default `/var/tmp` instead
   of `/tmp`, which is often a small RAM-backed tmpfs.
 - **An upgrade keeps the working install when the new one cannot run here**
-  (musl, a `noexec` prefix): the bundled Python is started once before the old
-  tree is replaced, and the installer exits 1 with the reason.
+  (musl, a `noexec` prefix): the bundled zstd and Python are started once before
+  the old tree is replaced, and the installer exits 1 with the reason.
 - **`make package` keeps its temporary files out of `/tmp` and cleans up after a
   failure.** pip's unpacking, makeself's ~75 MB archive, the static-zstd build and
   the smoke-test install now live in one private directory under `/var/tmp`,
@@ -145,7 +145,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is now `root:root` with `go-w` (the build fails otherwise), and the installer
   extracts with `--no-same-owner` under `umask 022`: the tree belongs to whoever
   installs and every user can read and run it. Images built with an older
-  installer keep the uid-1000 tree until rebuilt.
+  installer keep the uid-1000 tree until rebuilt. Directories that already exist
+  keep their modes: after upgrading a system install that an older installer made
+  in a new directory (e.g. `/opt/aiagent`), run `sudo chmod go+rx` on the prefix
+  and its `bin`, `lib`, `share` and `share/doc`, or reinstall into a fresh prefix.
 - **`install.sh` downloads with `curl --proto '=https' --tlsv1.2`**, so no
   redirect can downgrade the download to plain HTTP. The wget fallback (hosts
   without curl) cannot enforce this; `AIAGENT_VERIFY=1` checks what it downloaded.
