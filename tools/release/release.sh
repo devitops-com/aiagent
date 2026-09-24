@@ -11,7 +11,8 @@
 # tools/package/build-binary.sh). Release the *current* version; bump the version
 # and fill in CHANGELOG entries before running this.
 #
-# Guards (all must pass before anything mutates): on `main`, clean working tree,
+# Guards (all must pass before anything mutates): on `main`, clean working tree
+# (untracked files and assume-unchanged / skip-worktree entries included),
 # local == origin/main, and neither the tag nor the GitHub release exists yet.
 #
 # Non-interactive use (CI): set AIAGENT_RELEASE_ASSUME_YES=1 to skip the prompt.
@@ -61,8 +62,20 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$CURRENT_BRANCH" = "$BRANCH" ] \
     || { echo "ERROR: not on '$BRANCH' (currently on '$CURRENT_BRANCH')" >&2; exit 1; }
 
-[ -z "$(git status --porcelain)" ] \
+# --untracked-files=all overrides a status.showUntrackedFiles=no config: the build
+# packs untracked files under src/ into the wheel, so what ships must be exactly
+# what the tag points at.
+[ -z "$(git status --porcelain --untracked-files=all)" ] \
     || { echo "ERROR: working tree is not clean; commit or stash first" >&2; exit 1; }
+# git status cannot see edits to files marked assume-unchanged (lower-case tag in
+# `git ls-files -v`) or skip-worktree (S).
+HIDDEN="$(git ls-files -v | grep -E '^([a-z]|S) ' || true)"
+[ -z "$HIDDEN" ] || {
+    echo "ERROR: files hidden from git status (assume-unchanged / skip-worktree):" >&2
+    printf '%s\n' "$HIDDEN" | cut -c3- | sed 's/^/  /' >&2
+    echo "       clear with: git update-index --no-assume-unchanged --no-skip-worktree FILE" >&2
+    exit 1
+}
 
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
     echo "ERROR: tag $TAG already exists locally" >&2; exit 1
@@ -110,7 +123,9 @@ EOF
 if [ "${AIAGENT_RELEASE_ASSUME_YES:-0}" != "1" ]; then
     if [ -t 0 ]; then
         printf 'Continue? [y/N] '; read -r reply
-    elif [ -e /dev/tty ]; then
+    # The /dev/tty node always exists; without a controlling terminal opening it
+    # fails (and set -e would abort without a word), so probe it instead.
+    elif { : > /dev/tty; } 2>/dev/null; then
         printf 'Continue? [y/N] ' > /dev/tty; read -r reply < /dev/tty
     else
         echo "ERROR: not a TTY; set AIAGENT_RELEASE_ASSUME_YES=1 to proceed non-interactively" >&2

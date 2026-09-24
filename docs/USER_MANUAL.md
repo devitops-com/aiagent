@@ -684,8 +684,9 @@ release with two assets attached: the `aiagent-install.sh` bundle and the
 
 Before releasing: bump `version` in `pyproject.toml`, add entries under
 `## [Unreleased]` (an empty section is refused), and run `make lock` if
-dependencies changed. Pre-flight guards require a clean tree on `main`, in sync
-with `origin`, with the tag and release not yet present. For CI or non-interactive
+dependencies changed. Pre-flight guards require a clean tree on `main` (untracked
+files and assume-unchanged / skip-worktree entries included), in sync with
+`origin`, with the tag and release not yet present. For CI or non-interactive
 runs, set `AIAGENT_RELEASE_ASSUME_YES=1` to skip the prompt.
 
 ---

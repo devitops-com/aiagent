@@ -165,7 +165,8 @@ pyproject version, with a hostile `PYTHONPATH`/`PYTHONHOME` too, and file modes.
 
 **Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
 versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,
-clean tree, in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
+clean tree incl. untracked files and assume-unchanged/skip-worktree entries,
+in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
 refused) → rebuild installer → commit → tag → atomic push → `gh release create`
 with **two** assets: `aiagent-install.sh` + `install.sh`. `install.sh` is a POSIX
 **bootstrap** — a makeself archive can't be piped to `sh` (it seeks within `$0`),
