@@ -841,3 +841,17 @@ def test_make_check_runs_what_the_ci_lint_job_runs() -> None:
     local = [line.removeprefix(".venv/bin/") for line in result.stdout.splitlines()]
     lint = workflow("ci.yml")["jobs"]["lint"]
     assert local == [line for line in run_lines(lint) if line and not line.startswith("python ")]
+
+
+def test_the_dependency_audit_runs_on_lock_changes_and_audits_every_lock() -> None:
+    """A lock with a known advisory fails before it merges, not at the next daily run."""
+    audit = workflow("audit.yml")
+    on = audit["on"]
+
+    assert "schedule" in on
+    for event in ("pull_request", "push"):
+        assert on[event]["paths"] == ["requirements*.txt", "pyproject.toml"]
+    assert on["push"]["branches"] == ["main"]
+    lines = run_lines(audit["jobs"]["pip-audit"])
+    audited = [line.split(" -r ")[1].split()[0] for line in lines if line.startswith("pip-audit ")]
+    assert audited == LOCKS

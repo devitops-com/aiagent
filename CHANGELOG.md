@@ -49,6 +49,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `requirements-build.txt`.
 - **`make check` also runs bandit** (new `make security`), so it runs exactly what
   the CI lint job runs.
+- **The dependency audit also runs on every pull request and push to `main` that
+  changes a lock or `pyproject.toml`**, so a pin with a known advisory fails
+  before it merges instead of at the next daily run, and it audits the
+  build-backend lock (`requirements-build.txt`) too.
 - **The test suite keeps its temp files out of `/tmp`.** Each run gets a private
   directory under `/var/tmp` for `tmp_path` and `TMPDIR`, removed when the run
   ends, pass or fail; it used to leave `/tmp/pytest-of-<user>` behind.
