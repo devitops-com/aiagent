@@ -27,9 +27,12 @@ dev-install: ## Set up .venv with aiagent + dev dependencies (editable)
 # interpreter happens to be active. Without it, locking from an older venv
 # silently keeps pins that the target Python rejects (litellm <= 1.92.x caps at
 # python <3.14), and the failure only surfaces later in `make package`.
-lock: ## Regenerate requirements.txt and requirements-dev.txt from pyproject.toml
-	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --generate-hashes -o requirements.txt
-	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --extra dev --generate-hashes -o requirements-dev.txt
+# uv keeps the pins already in the lock files, so plain `make lock` never moves a
+# locked package. LOCK_ARGS passes upgrade flags through, e.g. past an advisory:
+#   make lock LOCK_ARGS='--upgrade-package anyio'   (or --upgrade: re-resolve all)
+lock: ## Regenerate requirements.txt and requirements-dev.txt from pyproject.toml (LOCK_ARGS: extra uv flags)
+	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --generate-hashes -o requirements.txt $(LOCK_ARGS)
+	uv pip compile pyproject.toml --python-version $(PYTHON_VERSION) --extra dev --generate-hashes -o requirements-dev.txt $(LOCK_ARGS)
 
 # --- Testing ---
 

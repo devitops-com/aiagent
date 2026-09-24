@@ -619,6 +619,7 @@ make check           # ruff + mypy (strict)
 make test            # pytest (hermetic; live devai tests are opt-in: -m live)
 make test-cov        # pytest with coverage gate (85%)
 make lock            # regenerate requirements*.txt (needed before `make package`)
+make lock LOCK_ARGS='--upgrade-package anyio'   # also move one locked package
 make package         # build dist/aiagent-install.sh
 make release         # tag + publish GitHub release with the installer asset
 ```

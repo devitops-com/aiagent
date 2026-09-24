@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **`make lock` takes `LOCK_ARGS`.** uv keeps the pins already in the lock
+  files, so a plain `make lock` never moved anyio. Pass the upgrade through:
+  `make lock LOCK_ARGS='--upgrade-package anyio'` (or `--upgrade` to re-resolve
+  everything).
+
+### Security
+- **anyio 4.14.1 -> 4.15.1** in both locks (typing-extensions 4.15.0 -> 4.16.0
+  comes with it), past CVE-2026-63374, CVE-2026-64847 and CVE-2026-63349 (fixed
+  in 4.14.2). v0.3.1 bundles 4.14.1; the daily dependency audit has failed on it
+  since 2026-09-19.
+
 ## [0.3.1] - 2026-09-14
 
 ### Fixed

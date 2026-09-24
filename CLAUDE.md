@@ -94,7 +94,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 ## Commands
 
 `make dev-install` · `make check` (ruff + mypy --strict) · `make test` (hermetic) ·
-`make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging) · `make package` ·
+`make test-cov` (gate 85%) · `make lock` (REQUIRED before packaging; keeps existing pins —
+`LOCK_ARGS='--upgrade-package X'` moves one) · `make package` ·
 `make release` (tag + publish GitHub release; version from pyproject).
 
 ## Invariants & gotchas (don't break these)
