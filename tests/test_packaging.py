@@ -139,6 +139,11 @@ def test_python_version_file_pins_an_exact_cpython_on_the_requires_python_floor(
     assert f"Programming Language :: Python :: {minor}" in PYPROJECT["project"]["classifiers"]
 
 
+def test_pyproject_marks_aiagent_private_so_pypi_rejects_an_upload() -> None:
+    """The installer is the only distribution; PyPI refuses any 'Private ::' classifier."""
+    assert "Private :: Do Not Upload" in PYPROJECT["project"]["classifiers"]
+
+
 def test_the_suite_runs_on_exactly_the_pinned_cpython() -> None:
     """The tests run on the CPython the installer ships: CI's setup-python reads .python-version,
     locally `make dev-install` makes the venv on it. After a pin bump, re-run dev-install."""

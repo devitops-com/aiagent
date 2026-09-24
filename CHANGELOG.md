@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **aiagent is marked `Private :: Do Not Upload`.** The installer from the GitHub
+  releases is its only distribution; the trove classifier makes PyPI reject an
+  accidental upload of the wheel or sdist.
 - **The bundled CPython is pinned exactly: 3.14.7** (`.python-version`, the one
   pin for the dev venv, CI, the locks and the installer; `requires-python` stays
   `>=3.14`). The build took its interpreter from `uv python find 3.14`, which
