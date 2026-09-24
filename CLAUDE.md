@@ -204,7 +204,8 @@ build then stops with uv's own error and says so.
 built one): payload `root:root`, no group/other write (build gate), extracted with
 `--no-same-owner` under `umask 022` so a root install is root-owned and
 world-readable; relative prefix → `$USER_PWD`, quoted `~` → `$HOME`, whitespace or
-over-long (127-byte shebang) prefix refused **before** creating anything; the staged
+over-long (shebang over 127 bytes, counted in bytes even where `sh` is bash under a
+UTF-8 locale) prefix refused **before** creating anything; the staged
 zstd (`--version`) and interpreter (`-I -c 'import aiagent'`) must run before an
 existing install is replaced (a `noexec` prefix or musl: exit 1 with the reason);
 makeself runs `sh ./startup.sh` and zstd runs from the stage, so a noexec `$TMPDIR`
