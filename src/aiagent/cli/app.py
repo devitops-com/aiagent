@@ -21,6 +21,7 @@ from aiagent import __version__
 from aiagent.cli._common import CLI_CONTEXT_SETTINGS
 from aiagent.cli.chat import chat as chat_cmd
 from aiagent.cli.config_cmd import config_app
+from aiagent.cli.distill_cmd import distill_app
 from aiagent.cli.doctor import doctor as doctor_cmd
 from aiagent.cli.eval_cmd import eval_skill
 from aiagent.cli.models import models_app
@@ -61,6 +62,7 @@ app.command("doctor", context_settings=CLI_CONTEXT_SETTINGS)(doctor_cmd)
 app.add_typer(models_app)
 app.add_typer(config_app)
 app.add_typer(skills_app)
+app.add_typer(distill_app)
 
 # Runtime commands. These touch DSPy, but import it lazily inside their handlers,
 # so registering them here keeps `import aiagent.cli.app` dspy-free.

@@ -1,0 +1,18 @@
+{
+  "command": "tools/system1/make_fixture.py --out tests/fixtures/system1",
+  "laya": {
+    "version": "0.3.20",
+    "commit": "23a1752"
+  },
+  "torch": "2.14.0+cu130",
+  "transformers": "5.17.0",
+  "onnx": "1.23.0",
+  "onnxscript": "0.7.2",
+  "onnxruntime": "1.30.0",
+  "tokenizers": "0.23.2",
+  "seed": 0,
+  "init_std": 0.3,
+  "vocab_size": 400,
+  "golden_rows": 20,
+  "ort_max_difference": 1.84e-06
+}

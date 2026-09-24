@@ -17,6 +17,7 @@ of env vars and aiagent adapts with no devai-specific code.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -41,8 +42,17 @@ DEFAULT_MODEL = "qwen3.5:9b-q8_0"  # placeholder — confirm with `aiagent model
 USER_CONFIG_PATH = Path.home() / ".config" / "aiagent" / "config.toml"
 USER_SKILLS_DIR = Path.home() / ".config" / "aiagent" / "skills"
 USER_SESSIONS_DIR = Path.home() / ".config" / "aiagent" / "chat-sessions"
+# Installed System 1 students (~1.3 GB each), eval reports, shadow logs: not ~/.config.
+USER_ARTIFACTS_DIR = Path.home() / ".local" / "share" / "aiagent" / "artifacts"
+# devai's laya volume (host /var/cache/devai/laya), mounted at /laya in the lab:
+# base/ (read), inbox/ (write), datasets/ and runs/ (read).
+DEFAULT_DISTILL_DIR = Path("/laya")
+DEFAULT_TRAINER_API_BASE = "http://devai-router:11438/v1"  # OpenAI fine-tuning jobs API
 
 Reasoning = Literal["think", "nothink"]
+System1Mode = Literal["off", "shadow", "gate"]
+
+_SKILL_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")  # SkillManifest.name
 
 
 def _ollama_host_to_base(host: str | None) -> str | None:
@@ -132,11 +142,32 @@ class Settings(BaseSettings):
     # Chat
     sessions_dir: Path = USER_SESSIONS_DIR
 
+    # System 1 (distilled students; aiagent.system1 / aiagent.distill)
+    distill_dir: Path = DEFAULT_DISTILL_DIR
+    trainer_api_base: str = DEFAULT_TRAINER_API_BASE
+    artifacts_dir: Path = USER_ARTIFACTS_DIR
+    # Per-skill cascade mode; a skill not listed is off.
+    system1_mode: dict[str, System1Mode] = Field(default_factory=dict)
+    # Overrides every installed per-question threshold when set.
+    system1_min_conf: float | None = Field(default=None, gt=0, le=1)
+
     @field_validator("api_key")
     @classmethod
     def _api_key_non_empty(cls, v: str) -> str:
         if not v:
             raise ValueError("api_key must be non-empty (LiteLLM rejects an empty key)")
+        return v
+
+    @field_validator("system1_mode")
+    @classmethod
+    def _system1_mode_skill_names(
+        cls, v: dict[str, System1Mode]
+    ) -> dict[str, System1Mode]:
+        bad = sorted(k for k in v if not _SKILL_NAME.match(k))
+        if bad:
+            raise ValueError(
+                f"system1_mode keys must be skill names ({_SKILL_NAME.pattern}): {bad}"
+            )
         return v
 
     @classmethod

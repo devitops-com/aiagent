@@ -25,6 +25,11 @@ _VARS = [
     "AIAGENT_SKILLS_DIR",
     "AIAGENT_SESSIONS_DIR",
     "AIAGENT_PROXY_URL",
+    "AIAGENT_DISTILL_DIR",
+    "AIAGENT_TRAINER_API_BASE",
+    "AIAGENT_ARTIFACTS_DIR",
+    "AIAGENT_SYSTEM1_MODE",
+    "AIAGENT_SYSTEM1_MIN_CONF",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
@@ -48,3 +53,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("AIAGENT_SKILLS_DIR", str(tmp_path / "no_user_skills"))
     # Isolate chat sessions to a temp dir so `aiagent chat` never touches ~/.config.
     monkeypatch.setenv("AIAGENT_SESSIONS_DIR", str(tmp_path / "chat_sessions"))
+    # The distill volume and the installed students: never /var/cache/devai or ~/.local/share.
+    # Neither directory is created; a test that needs one creates it.
+    monkeypatch.setenv("AIAGENT_DISTILL_DIR", str(tmp_path / "distill"))
+    monkeypatch.setenv("AIAGENT_ARTIFACTS_DIR", str(tmp_path / "artifacts"))

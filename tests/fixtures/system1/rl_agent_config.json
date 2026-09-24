@@ -1,0 +1,19 @@
+{
+  "encoder": "tiny/offline",
+  "head_layers": 2,
+  "act_costs": {
+    "escalate": 0.5
+  },
+  "max_len": 128,
+  "head_max_len": 96,
+  "temperature": [
+    1.3,
+    0.8,
+    1.1
+  ],
+  "temperature_by_options": {
+    "choice:2": 2.0,
+    "choice:11+": 0.1,
+    "score:6-10": 7.0
+  }
+}

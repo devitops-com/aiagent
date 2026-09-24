@@ -814,6 +814,86 @@ def test_a_home_of_slash_is_not_searched_for(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+ORT_PYBIND = f"onnxruntime_pybind11_state.cpython-{MINOR.replace('.', '')}-x86_64-linux-gnu.so"
+ORT_PROVIDERS = "libonnxruntime_providers_shared.so"
+ORT_LIBRARY = "libonnxruntime.so.1.30.0"
+
+
+def lock_onnxruntime(tmp_path: Path, **files: bytes) -> Path:
+    """onnxruntime/capi/ as the locked wheel installs it (the C API library, the Python binding
+    that links the runtime in itself, the shared-providers shim), plus or instead `files`."""
+    capi = tmp_path / "locked" / "onnxruntime" / "capi"
+    capi.mkdir(parents=True)
+    wheel = {
+        ORT_LIBRARY: minimal_elf("libc.so.6"),
+        ORT_PYBIND: minimal_elf("libstdc++.so.6", "libc.so.6"),
+        ORT_PROVIDERS: minimal_elf("libc.so.6"),
+    }
+    for name, data in {**wheel, **files}.items():
+        (capi / name).write_bytes(data)
+    return capi
+
+
+def test_the_bundle_drops_onnxruntimes_c_api_library_and_keeps_the_python_binding(
+    tmp_path: Path,
+) -> None:
+    """libonnxruntime.so (29 MB) is only for C/C++ embedders: the binding links the runtime in."""
+    project, env = fake_build_project(tmp_path)
+    lock_onnxruntime(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    capi = f"python/lib/python{MINOR}/site-packages/onnxruntime/capi"
+    names = payload(tmp_path)
+    assert {f"{capi}/{ORT_PYBIND}", f"{capi}/{ORT_PROVIDERS}"} <= set(names)
+    assert [name for name in names if "libonnxruntime.so" in name] == []
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "error"),
+    [
+        (
+            ORT_PYBIND,
+            minimal_elf("libonnxruntime.so.1", "libc.so.6"),
+            "ERROR: {so} needs the stripped libonnxruntime.so",
+        ),
+        ("bogus.so", b"not an ELF file\n", "ERROR: readelf failed on {so}"),
+    ],
+    ids=["needs-it", "not-elf"],
+)
+def test_the_build_fails_when_a_kept_onnxruntime_library_needs_the_stripped_one(
+    name: str, data: bytes, error: str, tmp_path: Path
+) -> None:
+    """The NEEDED gate reads every capi/*.so the strip keeps; a library readelf cannot read fails
+    it too, rather than passing unread."""
+    project, env = fake_build_project(tmp_path)
+    lock_onnxruntime(tmp_path, **{name: data})
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    so = staged(project, "lib", f"python{MINOR}", "site-packages", "onnxruntime", "capi", name)
+    assert error.format(so=so) in result.stderr.splitlines()
+
+
+def test_the_smoke_probe_runs_the_system1_fixture_on_the_bundled_onnxruntime(
+    tmp_path: Path,
+) -> None:
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    (probe,) = [
+        line.split()
+        for line in (tmp_path / "smoke.log").read_text().splitlines()
+        if "probe.py" in line
+    ]
+    assert probe[1:4] == ["-I", probe[2], str(project / "tests" / "fixtures" / "system1")]
+    assert "onnxruntime probe" in result.stdout
+
+
 # ----------------------------------------------------------------------------------- workflows
 
 WORKFLOWS = ROOT / ".github" / "workflows"

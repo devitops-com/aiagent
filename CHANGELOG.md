@@ -6,6 +6,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **System 1 students: `aiagent distill`.** A skill predictor with one text input
+  and one closed-set output (`Literal`, `bool` or a bounded `int`) can be distilled
+  into a small laya student that runs on the CPU through onnxruntime. `plan` shows
+  whether a predictor qualifies; `label` has the LLM (the teacher) label real
+  documents into a dataset on devai's laya volume; `train` and `status` start and
+  follow devai's fine-tuning job; `eval` verifies the student (file hashes, the bind
+  to the skill's signature, laya's golden answers) and certifies its precision on
+  held-out rows, exiting 0 to ship, 3 to repair or 4 to stop; `repair` labels the
+  pool rows the student is least sure of for the next round; `install` puts a
+  shipped student in place.
+- **`aiagent run` can ask the student first**, per skill: `system1_mode` is `off`
+  (the default), `shadow` (the LLM answers and the student's answers are logged to
+  `shadow.jsonl`) or `gate` (the student answers when it is sure enough, otherwise
+  the LLM). It fails open: any problem with the student hands the call to the LLM.
+- **The `polarity` skill** labels a passage negative, neutral, mixed or positive
+  with a single `dspy.Predict`: the System 1 pilot.
+- **Settings** `distill_dir`, `trainer_api_base`, `artifacts_dir`, `system1_mode`
+  and `system1_min_conf`.
+
+### Changed
+- **The installer ships onnxruntime**, with protobuf and flatbuffers, and grows by
+  about 11 MB to about 74 MB. onnxruntime's C/C++ API library is left out (the
+  Python binding does not need it, and a build gate checks that), and the smoke test
+  runs a tiny student on the bundled onnxruntime. numpy and tokenizers are now
+  direct dependencies.
+
+### Not yet
+- **Synthetic augmentation** (topping the corpus up with generated passages, steps
+  2 and 6 of the design): a departure from the design, accepted for now and to be
+  revisited after the pilot. `repair` tops the corpus up with real pool documents
+  instead.
+- **Multi-output predictors**: the gate certifies each question on its own, not
+  their joint precision. To be revisited.
+
 ## [0.4.1] - 2026-09-24
 
 ### Fixed

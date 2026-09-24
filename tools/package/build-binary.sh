@@ -172,9 +172,9 @@ SP="$STAGE/python/lib/python${PY_MINOR}/site-packages"
 find "$SP" -name direct_url.json -delete 2>/dev/null || true
 
 # --- 5b. Strip dead weight ---------------------------------------------
-# Keep numpy / tokenizers / tiktoken — needed for future ML features (RAG).
+# numpy / tokenizers / onnxruntime run System 1 students; tiktoken is kept for future RAG.
 [ -d "$SP/torch" ] && { echo "ERROR: torch leaked into the bundle" >&2; exit 1; }
-echo "==> Stripping dead weight (dep CLIs, headers, libpython, hf_xet, dep tests)"
+echo "==> Stripping dead weight (dep CLIs, headers, libpython, hf_xet, dep tests, ORT C API)"
 ( cd "$STAGE/python/bin" && for f in *; do
     case "$f" in "python${PY_MINOR}"|python3|python|"${APP}") ;; *) rm -f "$f" ;; esac
   done )
@@ -185,6 +185,19 @@ rm -f "$STAGE/python/lib"/libpython*
 find "$SP" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 # hf_xet: HuggingFace Hub Xet download accelerator — aiagent never hits the Hub.
 rm -rf "$SP/hf_xet" "$SP"/hf_xet-*.dist-info 2>/dev/null || true
+# onnxruntime's C/C++ API library (29 MB): the Python binding links the runtime in itself
+# (readelf -d: libc/libstdc++/libm/..., RUNPATH $ORIGIN, no libonnxruntime.so), so only
+# C/C++ embedders would load it. The file goes; the distribution stays (not STRIP_ABSENT).
+rm -f "$SP"/onnxruntime/capi/libonnxruntime.so*
+for so in "$SP"/onnxruntime/capi/*.so; do
+    [ -e "$so" ] || continue
+    # Capture, never pipe into grep -q (see the `run --help` check: under pipefail grep's
+    # early exit SIGPIPEs readelf, the pipeline turns false and the gate passes silently).
+    needed="$(readelf -dW "$so")" || { echo "ERROR: readelf failed on $so" >&2; exit 1; }
+    case "$needed" in
+        *"[libonnxruntime.so"*) echo "ERROR: $so needs the stripped libonnxruntime.so" >&2; exit 1 ;;
+    esac
+done
 
 # --- 5c. Strip the AWS/Bedrock subtree ---------------------------------
 # litellm 1.98 promoted boto3 from an extra to a core dependency, for its AWS
@@ -451,15 +464,26 @@ for gone in ("boto3", "botocore", "s3transfer", "jmespath", "dateutil", "six"):
     assert importlib.util.find_spec(gone) is None, f"{gone} survived the AWS strip"
 
 reg, _ = load_registry(load_settings())
-for name in ("chat", "extract"):
+for name in ("chat", "extract", "polarity"):
     build_module(reg.get(name))
+
+# A System 1 student on the bundle's own sourceless numpy/tokenizers/onnxruntime (the tiny
+# fixture of tests/fixtures/system1): proves the libonnxruntime.so strip safe at run time.
+import sys
+from pathlib import Path
+
+import onnxruntime  # noqa: F401  - must import with libonnxruntime.so stripped
+from aiagent.system1.runtime import System1Runtime
+
+rt = System1Runtime(Path(sys.argv[1]))
+assert rt.predict({"text": "good service"}, {"q": {"type": "noul", "instructions": "is it late ?"}})
 PYEOF
-if ! "$TPREFIX/lib/$APP/bin/python${PY_MINOR}" -I "$PROBE"; then
-    echo "ERROR: bundle probe failed (skill load, litellm import, or AWS strip)" >&2
+if ! "$TPREFIX/lib/$APP/bin/python${PY_MINOR}" -I "$PROBE" "$ROOT/tests/fixtures/system1"; then
+    echo "ERROR: bundle probe failed (skill load, litellm import, AWS strip, or onnxruntime)" >&2
     exit 1
 fi
 "$TPREFIX/bin/$APP" doctor --offline >/dev/null
-echo "    ok (--help, version, hermetic, modes, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
+echo "    ok (--help, version, hermetic, modes, run/eval --help render, skills list -> extract, sourceless skill load, onnxruntime probe, doctor --offline)"
 
 # --- 13. Report --------------------------------------------------------
 SIZE="$(du -h --apparent-size "$OUT" | cut -f1)"   # not the blocks XFS preallocated

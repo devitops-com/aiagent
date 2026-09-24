@@ -5,8 +5,9 @@ from __future__ import annotations
 import dspy
 
 from aiagent.cli._runtime import configure_lm, prediction_to_dict
-from aiagent.config import load_settings
-from aiagent.llm.lm import build_lm, configure_default, routing
+from aiagent.config import Settings, load_settings
+from aiagent.llm.lm import build_exact_lm, build_lm, configure_default, routing
+from aiagent.llm.retry_lm import RetryAwareLM
 
 
 def test_build_lm_composes_model_string() -> None:
@@ -41,3 +42,34 @@ def test_runtime_configure_lm_with_model() -> None:
 
 def test_prediction_to_dict_fallback() -> None:
     assert prediction_to_dict("plain") == {"result": "plain"}
+
+
+def test_build_exact_lm_keeps_the_model_string_verbatim() -> None:
+    exact = "openai/Qwen3.8-27B-MTP-devai-NVFP4::nothink@32768"
+    lm = build_exact_lm(exact, settings=load_settings())
+    assert isinstance(lm, RetryAwareLM)
+    assert lm.model == exact
+
+
+def test_build_exact_lm_skips_registry_resolution() -> None:
+    # build_lm would resolve and compose this alias; the exact builder must not.
+    lm = build_exact_lm("openai/qwen3.5:9b-q8_0", settings=load_settings())
+    assert lm.model == "openai/qwen3.5:9b-q8_0"
+
+
+def test_build_exact_lm_carries_the_settings() -> None:
+    settings = Settings(
+        api_base="http://router.test:1/v1",
+        api_key="k",
+        cache=False,
+        request_timeout_s=12.5,
+        num_retries=5,
+    )
+    lm = build_exact_lm("openai/m::think", settings=settings)
+    assert lm.kwargs["api_base"] == "http://router.test:1/v1"
+    assert lm.kwargs["api_key"] == "k"
+    assert lm.kwargs["timeout"] == 12.5
+    assert lm.cache is False
+    assert lm.model_type == "chat"
+    assert lm._max_retries == 5
+    assert lm.num_retries == 0  # litellm's blind retry stays off

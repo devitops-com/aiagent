@@ -62,3 +62,31 @@ class AmbiguousSkillError(SkillError):
         super().__init__(
             f"ambiguous request {request!r}; candidates: {', '.join(candidates)}"
         )
+
+
+class System1Error(AiagentError):
+    """The System 1 student (runtime, questions or artifacts) failed."""
+
+
+class QuestionError(System1Error, ValueError):
+    """A laya question is malformed, or its options do not fit the token budget."""
+
+
+class ArtifactError(System1Error):
+    """A trained-student artifact is missing, corrupt, unbound or unsupported."""
+
+
+class ArtifactNotInstalledError(ArtifactError):
+    """No student is installed for this (skill, predictor)."""
+
+
+class DistillError(AiagentError):
+    """A distillation campaign step failed."""
+
+
+class DatasetContractError(DistillError):
+    """A distillation dataset violates the aiagent -> devai dataset contract."""
+
+
+class TrainerAPIError(DistillError):
+    """The fine-tuning jobs API failed or could not be reached."""

@@ -87,8 +87,18 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
   (`ExtractExpense` + `ExtractExpenseModule`), `evaluate.py`.
 - `data/loader.py`, `metrics/extraction.py` (dual-use metric), `optimize/harness.py`.
 - `skills/` = the **engine** (base/discovery/registry/loader/router).
-  `builtin_skills/` = shipped skill **content** (`extract`, `chat`), package data.
-  **Keep the split** — never merge engine and content dirs.
+  `builtin_skills/` = shipped skill **content** (`extract`, `chat`, `polarity`),
+  package data. **Keep the split** — never merge engine and content dirs.
+- `system1/` — the System 1 student layer: `contract.py` (hashing, ids, SHA256SUMS),
+  `sequence.py` (laya's input layout on raw `tokenizers`), `runtime.py`
+  (onnxruntime), `artifacts.py` (verify/install/load), `cascade.py` (`System1First`,
+  `apply_system1`; applied only in `run`'s handler).
+- `distill/` — the campaign (depends on `system1`, never on `cascade`):
+  `questions.py` (signature -> laya question + binds), `segment.py`, `splits.py`,
+  `dataset.py` (the aiagent -> devai contract), `label.py` (teacher votes),
+  `client.py` (fine-tuning jobs API), `gates.py` (τ on calib, Clopper-Pearson on
+  held-out), `campaign.py` (orchestration; `teacher_lm`/`trainer_client` are the
+  seams). `cli/distill_cmd.py` is `aiagent distill`.
 - `cli/` — Typer; `app.py` dispatcher + `main()`; one command per file.
 
 ## Commands
@@ -105,21 +115,32 @@ pyproject).
 
 ## Invariants & gotchas (don't break these)
 
-- **Lazy dspy in the CLI.** `import aiagent.cli.app` must NOT import `dspy`
-  (a subprocess test enforces it). `run/eval/optimize/chat` and the online half of
+- **Lazy dspy in the CLI.** `import aiagent.cli.app` must NOT import `dspy`, nor
+  numpy, tokenizers, onnxruntime or httpx (subprocess tests enforce both);
+  `cli/distill_cmd.py` imports `aiagent.distill.*` inside its handlers, and
+  `system1/cascade.py` is imported only inside `run`'s handler, never by `cli/app`.
+  `run/eval/optimize/chat` and the online half of
   `doctor`/`models` import dspy / `llm.lm` / `core.evaluate` / `data.loader` /
   `optimize.harness` **inside the function body**, never at module top. `_runtime.py`
   is import-safe (dspy only inside `configure_lm`).
 - **dspy ships no type stubs.** `dspy.Module`/`dspy.Signature` subclasses need
   `# type: ignore[misc]`; there's a mypy `dspy.*` override and an `exclude` for
-  `builtin_skills/` (exec-loaded plugins with same-named `skill.py`).
+  `builtin_skills/` (exec-loaded plugins with same-named `skill.py`). onnxruntime
+  ships no `py.typed` either: a mypy `onnxruntime.*` override (imported lazily by
+  `system1/runtime.py`).
 - **Config precedence:** `AIAGENT_*` env > TOML (`~/.config/aiagent/config.toml`) >
   devai-injected env (`OPENAI_BASE_URL`/`OLLAMA_HOST`+`/v1`/`OPENAI_API_KEY`/
   `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`/`CONTEXT`/`HTTPS_PROXY`/`HTTP_PROXY`) >
   defaults. `api_key` must be **non-empty** (default `"local"`). `proxy_url`
   (default `http://devai-pipelock:8888`) is the forward proxy for outbound URL
   fetches (empty string = direct); httpx trusts the pipelock MITM CA via the
-  system store (`SSL_CERT_FILE`), so no `verify=False`.
+  system store (`SSL_CERT_FILE`), so no `verify=False`. System 1 settings, with no
+  devai env source: `distill_dir` (default `/laya`, devai's lab mount of
+  `/var/cache/devai/laya`),
+  `trainer_api_base` (`http://devai-router:11438/v1`; the client uses
+  `trust_env=False`), `artifacts_dir` (`~/.local/share/aiagent/artifacts`),
+  `system1_mode` (per skill `off`/`shadow`/`gate`, default all off) and
+  `system1_min_conf`.
 - **Adapter:** DSPy default **ChatAdapter**; do NOT rely on native tool-calling or
   server JSON mode (devai backends strip/ignore them).
 - **Optimizers:** `from dspy.teleprompt import BootstrapFewShot, MIPROv2`. Persist
@@ -139,7 +160,7 @@ entrypoint (banner + `exec $SHELL`).
 ## Packaging
 
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
-(**linux-x86_64**, ~63 MB): bundled CPython **exactly** `.python-version` (3.14.7;
+(**linux-x86_64**, ~74 MB): bundled CPython **exactly** `.python-version` (3.14.7;
 X.Y.Z, the single source of truth for the dev venv, CI, the locks'
 `--python-version` and the bundle; `requires-python` keeps the 3.14 floor), **no
 libpython** (PBS links it statically into `bin/python3.14`; the shared
@@ -157,7 +178,11 @@ launcher — ignores `PYTHONPATH`,
 come from `PYTHONPATH`. `make lock` first. Prefix via `AIAGENT_PREFIX` or
 `-- --prefix DIR` (default `~/.local`; `-- --target` is refused, and plain `--target DIR`
 is makeself's own: it keeps the raw payload in DIR and still installs to the default
-prefix). Keeps numpy/tokenizers/tiktoken for future RAG; drops Tcl/Tk, hf_xet,
+prefix). Keeps numpy/tokenizers/onnxruntime for System 1 students (tiktoken for
+future RAG); strips onnxruntime's C/C++ API library `capi/libonnxruntime.so*` (29 MB;
+the Python binding links the runtime in) with a NEEDED gate (`readelf -dW` on every
+kept `capi/*.so`), and the smoke probe runs `tests/fixtures/system1` on the bundled
+onnxruntime; drops Tcl/Tk, hf_xet,
 and the **AWS/Bedrock subtree** (boto3 + botocore + s3transfer + deps — litellm
 makes boto3 a core dep since 1.98 but imports it
 lazily, and the local router never takes that path); must stay **torch-free**
@@ -294,7 +319,11 @@ Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-
 Hermetic by default. LLM-driven CLI commands use **`dspy.utils.DummyLM`**
 (monkeypatch each command's `configure_lm`); `doctor`/`models` use an httpx mock.
 `tests/conftest.py::clean_env` (autouse) neutralizes env/TOML/skills-dir. Live
-devai tests: `pytest -m live` (run inside `devai-net`).
+devai tests: `pytest -m live` (run inside `devai-net`). System 1 tests use the tiny
+hermetic ONNX student in `tests/fixtures/system1` (with golden answers from laya
+itself), made by `tools/system1/make_fixture.py` in a separate laya venv; laya,
+torch and transformers are never dependencies. The distill campaign tests use a
+DummyLM teacher and an `httpx.MockTransport` trainer.
 
 **Test temp files: never `/tmp`.** `tests/tmp_hygiene.py` (registered in
 `conftest.py`, tested in `tests/test_tmp_hygiene.py`) gives each run a private
@@ -307,8 +336,11 @@ killed runs at the next start. So plain `pytest` / `make test` is enough: no
 ## Scope (MVP) / not yet
 
 In: extraction demo, sentiment analysis (files/URLs/text via the `ingest` layer),
-skills, optimize/eval, chat, packaging. **Deferred:** MCP, RAG/embeddings (libs
-kept, not wired), weight finetuning (no torch).
+skills, optimize/eval, chat, packaging, System 1 distillation (`distill`, the
+`polarity` pilot). Weight fine-tuning happens in devai's trainer backend; aiagent
+never imports torch. It builds datasets and runs trained students through
+onnxruntime. **Deferred:** MCP, RAG/embeddings (libs kept, not wired), synthetic
+augmentation and multi-output predictors for `distill`.
 
 ## References
 

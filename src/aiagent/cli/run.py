@@ -38,6 +38,10 @@ def run(
     inputs = _resolve_inputs(text, input_file)
     configure_lm(settings, model)
     module = build_module(target)
+    if settings.system1_mode.get(target.name, "off") != "off":
+        from aiagent.system1.cascade import apply_system1  # lazy: numpy, ORT
+
+        apply_system1(module, target, settings)
     with verbosity_scope(verbose=verbose, skill=target.name):
         data = prediction_to_dict(module(**inputs))
 

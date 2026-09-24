@@ -59,6 +59,23 @@ def build_lm(
     )
 
 
+def build_exact_lm(model_string: str, *, settings: Settings) -> dspy.LM:
+    """A RetryAwareLM for an already composed model string (no registry resolution).
+
+    Used where the exact string matters, e.g. relabeling with the teacher a dataset
+    records, so devai restores that very backend. Same kwargs as :func:`build_lm`.
+    """
+    return RetryAwareLM(
+        model_string,
+        api_base=settings.api_base,
+        api_key=settings.api_key,
+        model_type="chat",
+        max_retries=settings.num_retries,
+        cache=settings.cache,
+        timeout=settings.request_timeout_s,
+    )
+
+
 def configure_default(settings: Settings) -> dspy.LM:
     """Build the default LM and set it as the process-wide DSPy default."""
     lm = build_lm(settings=settings)

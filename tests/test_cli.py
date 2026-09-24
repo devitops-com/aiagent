@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -84,7 +85,7 @@ def test_doctor_offline() -> None:
 def test_help_lists_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("doctor", "models", "config", "version"):
+    for cmd in ("doctor", "models", "config", "version", "distill"):
         assert cmd in result.stdout
 
 
@@ -93,6 +94,20 @@ def test_importing_cli_does_not_import_dspy() -> None:
     code = "import aiagent.cli.app, sys; print('dspy' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"
+
+
+def test_importing_cli_does_not_import_heavy_modules() -> None:
+    """Nor numpy, tokenizers, onnxruntime (System 1) or httpx: the distill and run commands
+    import them inside their handlers."""
+    code = (
+        "import aiagent.cli.app, json, sys; "
+        "print(json.dumps({m: m in sys.modules for m in "
+        "('dspy', 'numpy', 'tokenizers', 'onnxruntime', 'httpx')}))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    loaded = json.loads(out.stdout)
+    assert loaded == dict.fromkeys(loaded, False), loaded
+    assert len(loaded) == 5
 
 
 @pytest.mark.parametrize(

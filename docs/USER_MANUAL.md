@@ -30,6 +30,7 @@ implemented feature in detail.
   - [`run` — run a skill once](#run--run-a-skill-once)
   - [`eval` — score a skill over a dev set](#eval--score-a-skill-over-a-dev-set)
   - [`optimize` — compile a skill](#optimize--compile-a-skill)
+  - [`distill` — train a System 1 student](#distill--train-a-system-1-student)
   - [`chat` — resumable multi-turn Q&A](#chat--resumable-multi-turn-qa)
   - [`shell` — devai agent entrypoint](#shell--devai-agent-entrypoint)
   - [`version`](#version)
@@ -59,7 +60,14 @@ sources — **built-in** skills shipped with aiagent, and **user** skills under
 
 **Pipeline.** A skill's runnable program is a `dspy.Module` (aiagent's base class
 is `Pipeline`). The built-in `extract` skill uses a `ChainOfThought` program over
-a typed signature.
+a typed signature. The built-in `polarity` skill is a single `dspy.Predict` that
+labels a passage `negative`, `neutral`, `mixed` or `positive`: the pilot for
+System 1 students.
+
+**System 1 student.** A small local classifier (a laya model, run on onnxruntime
+on the CPU) trained to answer one skill predictor the way the LLM does, and to say
+how sure it is. When it is sure enough it answers first; otherwise the LLM does.
+See [`distill`](#distill--train-a-system-1-student).
 
 **Metric.** A callable following DSPy's contract
 `metric(example, prediction, trace=None) -> float | bool`. It returns a **float**
@@ -88,7 +96,7 @@ Run `aiagent --help` for the top-level command list, or `aiagent <command>
 --help` for any single command. Commands that only inspect configuration or
 connectivity (`doctor`, `config`, `models`, `skills`, `version`, `--help`) never
 import DSPy, so they start instantly. The commands that run a model (`run`,
-`eval`, `optimize`, `chat`) import DSPy lazily on first use.
+`eval`, `optimize`, `chat`, `distill`) import DSPy lazily on first use.
 
 ### Global behavior
 
@@ -281,6 +289,146 @@ with `--out` it also prints the save path. Optimizer sizing (bootstrapped demos,
 labeled demos, rounds) is drawn from configuration — see
 [Configuration](#configuration) and [Optimizers](#optimizers).
 
+### `distill` — train a System 1 student
+
+Distills one skill predictor into a **System 1 student**: a small laya model that
+runs in-process on onnxruntime (CPU) and answers first when it is sure, handing
+the call to the LLM when it is not. The LLM (the skill's own predictor) is the
+teacher: it labels real documents, devai's trainer fine-tunes the student on those
+labels, and aiagent certifies the student on held-out rows before it may answer.
+
+A predictor qualifies when it has exactly **one `str` input** and exactly **one
+output** besides `reasoning` with a closed answer set: `Literal[...]` of 2-10
+strings, `bool`, or `int` with both bounds (`ge=`/`le=`) spanning 2-10 levels. The
+built-in `polarity` skill is the pilot. `aiagent distill plan SKILL` tells you why a
+predictor does not qualify (`extract`, for instance, has three outputs, two `str`
+and a `float`).
+
+```bash
+aiagent distill plan polarity                                 # does it qualify? (no LLM)
+aiagent distill label polarity --jsonl reviews.jsonl --k 4    # teacher labels -> ds-…
+aiagent distill train ds-9f2c41d07a1b --wait                  # devai trains a student
+aiagent distill eval ftjob-3f9e0c1b                           # verify, score, decide
+aiagent distill install ftjob-3f9e0c1b                        # after a ship verdict
+aiagent distill repair ftjob-3f9e0c1b                         # after a repair verdict
+```
+
+| Step | What happens |
+|------|--------------|
+| `plan SKILL` | Derives a laya question from each predictor's signature and reports whether it qualifies, its hashes and the held-out sizing. No LLM. |
+| `label SKILL` | Reads the documents, cuts them into segments the student sees whole (by its token budget), splits them by document hash, has the teacher answer train, calib and held-out segments `k` times each, and writes the dataset to `inbox/ds-<sha12>/`. Pool segments stay unlabeled. |
+| `train DATASET` | Re-validates the dataset against its base checkpoint, then starts a fine-tuning job at `trainer_api_base`. `--wait` follows it and warms the teacher back up. |
+| `status JOB` | Shows the job from the volume (`runs/<job>/job.json`, `events.jsonl`), or from the API if it is not there yet. |
+| `eval RUN` | Verifies the student (every file hash, the bind to the skill's signature and questions, the token limits, and laya's golden answers on onnxruntime), scores calib and held-out, and decides **ship**, **repair** or **stop**. Saves a report. |
+| `repair RUN` | Has the teacher label the pool rows the student is least sure of and writes the next round's dataset (same calib and held-out). Train it again. |
+| `install RUN` | Needs a ship report. Copies the student to `artifacts_dir`, re-hashes the copies against what `eval` verified, and prints how to enable it. |
+
+**Options.** Every command takes `--json`.
+
+| Command | Options |
+|---------|---------|
+| `plan SKILL` | `--predictor NAME` (show only that one) |
+| `label SKILL` | `--predictor NAME` (default: the only qualifying one); sources, each repeatable: `--file`/`-f PATH`, `--dir`/`-d PATH` (recursive: `.txt .md .html .htm .xhtml .pdf`), `--url`/`-u URL` (through `proxy_url`), `--jsonl PATH` (one JSON object per line, the text in the predictor's input field, e.g. `{"text": "…"}`); `--teacher MODEL` (default: the configured model), `--k 8` (samples per segment, 1-32), `--temperature 0.7` (0-2, above 0), `--concurrency 4` (1-4 calls in flight), `--base NAME@REV` (default `laya-multilingual@55cf4c4e…`) |
+| `train DATASET` | `--epochs 4`, `--batch-size` (default: the trainer's choice), `--lr-multiplier 1.0`, `--wait`, `--no-warm-up` |
+| `status JOB` | `--events 5`, `--wait`, `--no-warm-up` |
+| `eval RUN` | `--target-precision 0.95`, `--fit-precision 0.98` (at least the target), `--alpha 0.05`, `--min-coverage 0.2`, `--epsilon 0.01`, `--max-rounds 3` |
+| `repair RUN` | `--max-rows 256`, `--concurrency 4` |
+| `install RUN` | – |
+
+**Exit codes.** `plan` exits 1 when no predictor (or not the named one) qualifies.
+`train --wait` and `status --wait` exit 1 unless the job succeeded. `eval` exits
+**0** for ship, **3** for repair and **4** for stop. Otherwise 0; usage errors exit
+2 and runtime errors 1, as everywhere.
+
+**The gate.** Each question's confidence threshold τ is fitted on **calib** at
+`--fit-precision` (0.98): the lowest confidence whose accepted rows reach it. On
+**held-out**, the rows at or above τ are accepted, and the question passes when the
+one-sided Clopper-Pearson lower bound of their precision reaches
+`--target-precision` (0.95) at `--alpha` and they cover at least `--min-coverage`
+of held-out. τ is fitted stricter than the target because a τ fitted at the target
+itself lands held-out precision at about the target, with its lower bound below
+it, so a well-calibrated student would almost never ship. All questions pass →
+**ship**. Otherwise **stop** when held-out is too small to ever certify, no rounds
+are left, the pool is exhausted, or held-out accuracy did not improve by
+`--epsilon` over the previous round; else **repair**.
+
+**Corpus sizing.** Documents are split by `sha256(group_id) mod 100`, where all segments
+of a document share one `group_id`: train 60%, calib 10%, held-out 15%, pool 15%, and
+every segment of a document stays in its document's split. Calib and held-out are frozen across rounds, so size them at the
+start: certifying 0.95 at α=0.05 needs at least **59 accepted held-out rows, all
+correct**; a student that is really 98% right needs about **181** accepted rows, one
+that is 97% right about **361**. Label about **2,000-3,000 segments**. `label` warns
+when held-out has fewer than 300 rows. A smaller `k` buys more documents per
+teacher hour: k = 3-4 (laya's own recipe used 3) is usually a better trade than the
+default 8.
+
+**Where things live.** On the distill volume (`distill_dir`, default `/laya`: devai
+mounts its `/var/cache/devai/laya` there in the lab; set `AIAGENT_DISTILL_DIR`
+elsewhere):
+
+| Path | Written by | Holds |
+|------|------------|-------|
+| `base/<name>@<rev12>/` | devai | the base checkpoint: `tokenizer/`, `rl_agent_config.json`, `model.safetensors` (the directory takes the revision's first 12 hex chars; `--base` and the manifest keep the full one, which devai checks against its catalog) |
+| `inbox/ds-<sha12>/` | aiagent | a dataset: `manifest.json`, `train/calib/heldout/pool.jsonl`, `SHA256SUMS` (the id is the manifest's sha256) |
+| `datasets/ds-<sha12>/` | devai | datasets the trainer accepted (read first) |
+| `runs/<job>/` | devai | the student: `manifest.json`, `model.onnx` (+ `model.onnx.data`), `tokenizer/`, `rl_agent_config.json`, `golden.jsonl`, `SHA256SUMS`; plus `job.json` and `events.jsonl` |
+
+Under `artifacts_dir` (default `~/.local/share/aiagent/artifacts`; a student is about
+1.3 GB), everything is in `system1/`: eval reports in `evals/<run>.json`, and per
+`skills/<skill>/<predictor>/` the installed student (`<artifact_id>/` with an
+`install.json`), `current.json` naming it, and the shadow log `shadow.jsonl`.
+
+**Serving: off → shadow → gate.** Installing does not switch anything on.
+`system1_mode` does, per skill, and only for `aiagent run`:
+
+```bash
+AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}' aiagent run polarity --text "…"
+```
+
+or in `config.toml`:
+
+```toml
+[system1_mode]
+polarity = "shadow"   # off (default) | shadow | gate
+```
+
+- **shadow**: the LLM answers as before; the student answers too, and one line per
+  call goes to `shadow.jsonl`: the time, the artifact id, the student's and the
+  LLM's answers, the student's confidence, whether the gate would have accepted it,
+  whether they agree, and `student_ms`. No input text is logged. Run shadow first,
+  on real traffic, and read the log.
+- **gate**: the student answers when every question's confidence is at least τ
+  (from the install, or `system1_min_conf` for all questions); otherwise the LLM
+  does. A `ChainOfThought` predictor answered by the student gets the reasoning
+  `[system1]`.
+
+The student **fails open**: an input too long for it to see whole, a student that
+cannot load or run, or any other problem hands the call to the LLM with its
+arguments unchanged (a load failure warns once, then leaves the student off for the
+rest of the run). A student whose skill signature or questions changed since it was
+trained is not used at all (warning: distill again); one whose skill files changed
+is only shadowed in gate mode, with a warning to run `eval` and `install` again.
+
+**One-shot cost.** In shadow and gate mode each `aiagent run` loads the student
+first: the multilingual export took 2.81 s to load on a CPU, and its 34 MB
+tokenizer is parsed too. For a single input that can be slower than a warm LLM
+call; the gain is for many inputs, and the shadow log's `student_ms` measures what
+each run paid.
+
+**What the gate certifies.** Agreement with the **teacher**, not correctness. The
+labels are the LLM's answers, so a student that copies the LLM's mistakes passes
+the gate. Spot-check the teacher's labels, and the shadow log, before relying on
+gate mode.
+
+**Not yet.** Synthetic augmentation (topping the corpus up with generated
+passages; the design's steps 2 and 6): repair tops up with real pool documents
+instead, and this departure is accepted for now and to be revisited after the
+pilot. Predictors with more
+than one output (the gate does not certify their joint precision), more than one
+input or a non-`str` input, and free-text or `float` outputs. A student shorter
+than the base's 1024 tokens (`label --max-len`), and int8/fp16 students. The
+cascade in commands other than `run`.
+
 ### `chat` — resumable multi-turn Q&A
 
 A basic conversational loop. Each answer is produced with prior turns as context,
@@ -372,6 +520,11 @@ the same name. Inspect the resolved result with `aiagent config show`.
 | `max_rounds` | `1` | BootstrapFewShot: bootstrapping rounds. |
 | `skills_dir` | `~/.config/aiagent/skills` | Where user skills are discovered. |
 | `sessions_dir` | `~/.config/aiagent/chat-sessions` | Where chat sessions are stored. |
+| `distill_dir` | `/laya` | The distill volume shared with devai (host `/var/cache/devai/laya`): `base/` (read), `inbox/` (write), `datasets/` and `runs/` (read). |
+| `trainer_api_base` | `http://devai-router:11438/v1` | devai's OpenAI-compatible fine-tuning jobs API (reached directly, never through `proxy_url`). |
+| `artifacts_dir` | `~/.local/share/aiagent/artifacts` | Installed System 1 students (about 1.3 GB each), eval reports and shadow logs, all under `system1/`. |
+| `system1_mode` | `{}` (all `off`) | Per-skill System 1 mode, `off`, `shadow` or `gate`. Env: JSON, e.g. `AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}'`; TOML: a `[system1_mode]` table. |
+| `system1_min_conf` | `null` | A confidence threshold for every question, in (0, 1], instead of each installed τ. |
 
 ### TOML example
 
@@ -386,6 +539,9 @@ num_threads = 8
 model = "qwen3.5:9b-q8_0"
 reasoning = "nothink"
 ctx = 8192
+
+[system1_mode]     # System 1 students, per skill: off | shadow | gate
+polarity = "shadow"
 ```
 
 An alias defined under `registry_overrides` becomes selectable as
@@ -647,7 +803,7 @@ nothing behind.
 ## Packaging
 
 `make package` produces `dist/aiagent-install.sh` — a single **makeself**
-self-extracting, run-once installer (**linux-x86_64**, ~63 MB). It carries a
+self-extracting, run-once installer (**linux-x86_64**, ~74 MB). It carries a
 relocatable CPython (exactly the X.Y.Z in `.python-version`, now 3.14.7; the build
 fails on any other) with aiagent and every dependency,
 **sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The
@@ -659,9 +815,13 @@ static zstd**, so the target host needs neither Python nor zstd. makeself adds a
 **SHA256** integrity check. The launcher runs the bundled Python in isolated mode
 (`-I`), so `PYTHONPATH`, `PYTHONHOME`, the user site and the current directory
 never reach it (a skill's `<module>:<attr>` metric therefore cannot come from
-`PYTHONPATH`; see [Metrics](#metrics)). Only `aiagent` goes on `PATH`. ML
-libraries (numpy, tokenizers, tiktoken) are kept for future RAG features; the
-bundle stays torch-free.
+`PYTHONPATH`; see [Metrics](#metrics)). Only `aiagent` goes on `PATH`. numpy,
+tokenizers and onnxruntime (with its dependencies protobuf and flatbuffers) run
+System 1 students, and tiktoken is kept for future RAG features; the bundle stays
+torch-free. onnxruntime's C/C++ API library (`libonnxruntime.so`, 29 MB) is left
+out: the Python binding links the runtime in itself, and the build fails if a kept
+onnxruntime library needs the removed one. The smoke test runs a tiny System 1
+student on the bundle's own onnxruntime.
 
 The payload is owned by `root:root` with no group or other write bits, and the
 installer extracts it without restoring owners, so the installed tree belongs to
@@ -685,7 +845,7 @@ aiagent --help
 ```
 
 `--target DIR` (without `--`) is makeself's own option: it keeps the raw payload
-(~63 MB) in `DIR` and still installs to the default prefix. Choose the prefix with
+(~74 MB) in `DIR` and still installs to the default prefix. Choose the prefix with
 `AIAGENT_PREFIX` or `-- --prefix DIR`; `-- --target` is refused.
 
 Build deps: `uv`, `makeself`, `curl`, `readelf` (binutils), and a C toolchain (to build the static zstd
