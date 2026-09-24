@@ -720,7 +720,9 @@ version's CHANGELOG section as notes. `make release` follows that run
 publishing) for every pull request and every push to `main`, so a release build is
 proven before any tag exists; only its tag-only publish job may write to the
 repository or sign. Verify a release with
-`gh attestation verify aiagent-install.sh --repo devitops-com/aiagent`.
+`gh attestation verify aiagent-install.sh --repo devitops-com/aiagent`, or let
+`install.sh` do it before it runs the installer: `curl … | AIAGENT_VERIFY=1 sh`
+(see [Verify the download](../README.md#verify-the-download)).
 
 Before releasing: bump `version` in `pyproject.toml`, add entries under
 `## [Unreleased]` (an empty section is refused), and run `make lock` if
