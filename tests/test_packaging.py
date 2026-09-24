@@ -646,6 +646,36 @@ def test_the_build_fails_when_a_staged_elf_needs_libpython(tmp_path: Path) -> No
     assert f"  {staged / '_embed.so'}: libpython{MINOR}.so.1.0" in result.stderr.splitlines()
 
 
+def test_the_version_audit_excuses_exactly_the_distributions_the_build_strips(
+    tmp_path: Path,
+) -> None:
+    """STRIP_ABSENT is verify-versions.py's allow-list: a strip it misses would fail only a real
+    build (as MISSING), and a name it lists that the build keeps would excuse a lost module."""
+    project, env = fake_build_project(tmp_path)
+    lock = pinned("requirements.txt")
+    for name, version in lock.items():
+        (tmp_path / "locked" / f"{name.replace('-', '_')}-{version}.dist-info").mkdir(parents=True)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    site = f"python/lib/python{MINOR}/site-packages/"
+    shipped = {
+        canonicalize_name(name.removeprefix(site).split("-")[0])
+        for name in payload(tmp_path)
+        if name.startswith(site) and name.endswith(".dist-info")
+    }
+    (audit,) = [
+        line.split()
+        for line in (tmp_path / "smoke.log").read_text().splitlines()
+        if "verify-versions.py" in line
+    ]
+    excused = audit[audit.index(str(project / "requirements.txt")) + 1 :]
+    assert sorted(canonicalize_name(a) for a in excused if not a.startswith("HOME=")) == sorted(
+        {canonicalize_name(name) for name in lock} - shipped
+    )
+
+
 def test_the_build_reuses_the_cached_static_zstd_of_the_pinned_version(tmp_path: Path) -> None:
     """The cache is versioned (zstd-1.5.6-static-x86_64): a bump never picks up the old binary."""
     project, env = fake_build_project(tmp_path)

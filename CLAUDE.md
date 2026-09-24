@@ -161,8 +161,9 @@ prefix). Keeps numpy/tokenizers/tiktoken for future RAG; drops Tcl/Tk, hf_xet,
 and the **AWS/Bedrock subtree** (boto3 + botocore + s3transfer + deps — litellm
 makes boto3 a core dep since 1.98 but imports it
 lazily, and the local router never takes that path); must stay **torch-free**
-(build guards enforce it). The strip set lives once in `STRIP_ABSENT`
-(`build-binary.sh`) and feeds both the removal and the audit's allow-list.
+(build guards enforce it). The strip set is named in `STRIP_ABSENT`
+(`build-binary.sh`), the audit's allow-list; a test checks it against what the build
+removes.
 Deps install **hash-checked** from `requirements.txt` (`--require-hashes`, wheels only,
 `--no-deps`; the aiagent wheel `--no-deps` too) with **`--no-cache-dir`** (always
 fresh from the configured index); `pip check` must then report nothing, before pip
@@ -171,7 +172,8 @@ The aiagent wheel is built by the hash-pinned backend of `requirements-build.txt
 (`uv build --build-constraints … --require-hashes`), never one freshly resolved.
 The build then installs to a temp prefix and **audits every module against
 `requirements.txt`** at both the dist-info **and** imported-`__version__` level
-(`tools/package/verify-versions.py`, `STRIP_ABSENT` allow-listed), failing on any
+(`tools/package/verify-versions.py`, tested in `tests/test_installer.py`; `STRIP_ABSENT`
+allow-listed), failing on any
 stale module — the reproducibility guard for the v0.1.0 metadata/code split.
 
 **No build-host paths in the payload.** The sysconfig data goes back to PBS's
