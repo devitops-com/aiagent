@@ -41,6 +41,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   skill's `metric: <module>:<attr>` can no longer name a module that is only
   reachable through `PYTHONPATH`: keep the metric in the skill module
   (`skill:<attr>`) or use one the bundle ships (`aiagent.metrics.*`).
+- **The test suite keeps its temp files out of `/tmp`.** Each run gets a private
+  directory under `/var/tmp` for `tmp_path` and `TMPDIR`, removed when the run
+  ends, pass or fail; it used to leave `/tmp/pytest-of-<user>` behind.
 
 ### Fixed
 - **A relative, quoted-`~` or whitespace prefix no longer "succeeds" without a
