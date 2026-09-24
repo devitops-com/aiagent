@@ -624,7 +624,7 @@ make test-cov        # pytest with coverage gate (85%)
 make lock            # regenerate requirements*.txt (needed before `make package`)
 make lock LOCK_ARGS='--upgrade-package anyio'   # also move one locked package
 make package         # build dist/aiagent-install.sh
-make release         # tag + publish GitHub release with the installer asset
+make release         # tag + push; CI builds, attests and publishes the release
 ```
 
 Requires `uv`, which also installs Python 3.14.7, the exact version in
@@ -633,7 +633,8 @@ versions of `requirements-dev.txt`, so the checks and tests run on what the
 installer ships. The tests fail on any other interpreter (a `.venv` from before a
 pin bump): re-run `make dev-install`, which recreates `.venv`. A patch bump of
 `.python-version` may need a newer uv, which only knows the CPython patches
-published before it. Tests are hermetic by default: LLM-driven CLI
+published before it (in CI too: the setup-uv `version` in
+`.github/workflows/release.yml`). Tests are hermetic by default: LLM-driven CLI
 commands use `dspy.utils.DummyLM`, `doctor`/`models` use an httpx mock, and an
 autouse fixture neutralizes env/TOML/skills-dir so nothing leaks in. Live devai
 tests (`pytest -m live`) must run inside the `devai-net` network. The suite keeps
@@ -700,18 +701,35 @@ exempt.
 
 ## Releasing
 
-Maintainers cut a release with `make release`. It reads the version from
-`pyproject.toml`, promotes the `CHANGELOG.md` `[Unreleased]` section to that
-version, rebuilds the installer, tags `vX.Y.Z`, pushes, and publishes a GitHub
-release with two assets attached: the `aiagent-install.sh` bundle and the
-`install.sh` bootstrap that powers the one-liner in the Quick Start.
+Releases are built, attested and published by GitHub Actions
+(`.github/workflows/release.yml`), because artifact attestations can only be made
+there. Maintainers start one with `make release` (`tools/release/release.sh`). It
+reads the version from `pyproject.toml`, promotes the `CHANGELOG.md` `[Unreleased]`
+section to that version, commits `chore: release vX.Y.Z`, tags `vX.Y.Z` and pushes
+the commit and the tag together. It builds nothing and publishes nothing itself.
+
+The pushed tag starts the release workflow. It checks that the tag matches the
+version in `pyproject.toml`, builds the installer with `make package` (with the full
+smoke test) from the tagged commit, attests `aiagent-install.sh` and `install.sh`
+with `actions/attest-build-provenance`, and publishes the GitHub release with both
+files (the bundle and the bootstrap behind the Quick Start one-liner) and the
+version's CHANGELOG section as notes. `make release` follows that run
+(`gh run watch`) and prints the release URL or, if the run fails, how to recover;
+`AIAGENT_RELEASE_WATCH_WAIT` sets how many seconds it waits for the run to appear
+(default 60). The same workflow builds the installer (without attesting or
+publishing) for every pull request and every push to `main`, so a release build is
+proven before any tag exists; only its tag-only publish job may write to the
+repository or sign. Verify a release with
+`gh attestation verify aiagent-install.sh --repo devitops-com/aiagent`.
 
 Before releasing: bump `version` in `pyproject.toml`, add entries under
 `## [Unreleased]` (an empty section is refused), and run `make lock` if
 dependencies changed. Pre-flight guards require a clean tree on `main` (untracked
 files and assume-unchanged / skip-worktree entries included), in sync with
-`origin`, with the tag and release not yet present. For CI or non-interactive
-runs, set `AIAGENT_RELEASE_ASSUME_YES=1` to skip the prompt.
+`origin`, with the tag and release not yet present. For non-interactive runs, set
+`AIAGENT_RELEASE_ASSUME_YES=1` to skip the prompt. The dependency audit
+(`pip-audit` of all three locks) runs daily and on every change to a lock; check
+that its last run is green before releasing.
 
 ---
 

@@ -475,8 +475,9 @@ def test_the_build_refuses_a_python_version_that_is_not_an_exact_x_y_z(tmp_path:
 def test_the_build_stops_with_uvs_reason_when_uv_cannot_install_the_pinned_cpython(
     tmp_path: Path,
 ) -> None:
-    """A patch bump of .python-version needs a uv that knows the new CPython: the error says so
-    instead of a bare 'No interpreter found'."""
+    """A patch bump of .python-version needs a uv that knows the new CPython, in CI too (the
+    setup-uv version in release.yml): the error says so instead of a bare 'No interpreter
+    found'."""
     project, env = fake_build_project(
         tmp_path, uv_python_install=f'echo "{UV_CANNOT_DOWNLOAD}" >&2; exit 2'
     )
@@ -488,6 +489,7 @@ def test_the_build_stops_with_uvs_reason_when_uv_cannot_install_the_pinned_cpyth
     assert f"ERROR: uv 0.0.1 cannot install CPython {PINNED_PYTHON} (.python-version): update uv" in (
         result.stderr
     )
+    assert "setup-uv's version in .github/workflows/release.yml" in result.stderr
     uv = calls(tmp_path, "uv")
     assert ["python", "install", PINNED_PYTHON] in uv
     assert not [call for call in uv if call[:2] == ["python", "find"]]
@@ -855,3 +857,125 @@ def test_the_dependency_audit_runs_on_lock_changes_and_audits_every_lock() -> No
     lines = run_lines(audit["jobs"]["pip-audit"])
     audited = [line.split(" -r ")[1].split()[0] for line in lines if line.startswith("pip-audit ")]
     assert audited == LOCKS
+
+
+# ------------------------------------------------------------------------- the release workflow
+
+ATTEST_ACTION = "actions/attest-build-provenance@"
+RELEASE_ASSETS = ["dist/aiagent-install.sh", "install.sh"]
+
+
+@pytest.mark.parametrize(
+    ("name", "jobs"),
+    [
+        ("ci.yml", {"lint": "lint + types + bandit", "test": "tests + coverage + wheel"}),
+        ("release.yml", {"package": "installer + smoke test", "publish": "attest + publish"}),
+    ],
+)
+def test_the_job_names_stay_what_the_repository_rulesets_require(
+    name: str, jobs: dict[str, str]
+) -> None:
+    """The main ruleset requires the checks by these names: rename a job only together with it."""
+    assert {job_id: job["name"] for job_id, job in workflow(name)["jobs"].items()} == jobs
+
+
+def test_the_release_workflow_runs_on_version_tags_and_proves_the_build_on_prs_and_main() -> None:
+    on = workflow("release.yml")["on"]
+
+    assert on["push"]["tags"] == ["v*"]
+    assert on["push"]["branches"] == ["main"]
+    assert "pull_request" in on
+
+
+def test_the_release_workflow_builds_a_tag_once() -> None:
+    concurrency = workflow("release.yml")["concurrency"]
+
+    assert "github.ref" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "${{ github.ref_type != 'tag' }}"
+
+
+def test_only_the_tag_only_publish_job_may_write_sign_and_attest() -> None:
+    release = workflow("release.yml")
+    jobs = release["jobs"]
+
+    assert release["permissions"] == {"contents": "read"}
+    assert set(jobs) == {"package", "publish"}
+    assert jobs["package"].get("permissions", {"contents": "read"}) == {"contents": "read"}
+    publish = jobs["publish"]
+    assert publish["permissions"] == {
+        "contents": "write",
+        "id-token": "write",
+        "attestations": "write",
+    }
+    assert publish["needs"] == "package"
+    assert publish["if"] == "github.event_name == 'push' && github.ref_type == 'tag'"
+
+
+def test_the_package_job_builds_the_installer_with_the_full_smoke_test_on_every_run() -> None:
+    """PRs and main prove the release build before any tag exists, with a pinned uv and nothing
+    from another run's cache."""
+    package = workflow("release.yml")["jobs"]["package"]
+    lines = run_lines(package)
+
+    assert "if" not in package
+    assert "make package" in lines
+    assert any("apt-get install" in line and "makeself" in line for line in lines)
+    (uv,) = step_using(package, "astral-sh/setup-uv@")
+    assert re.fullmatch(r"\d+\.\d+\.\d+", uv["with"]["version"])
+    assert uv["with"]["enable-cache"] is False
+    (upload,) = step_using(package, "actions/upload-artifact@")
+    assert upload["with"]["path"] == "dist/aiagent-install.sh"
+    assert upload["with"]["if-no-files-found"] == "error"
+
+
+def tag_check(package: dict[str, Any]) -> dict[str, Any]:
+    return next(step for step in steps(package) if "GITHUB_REF_NAME" in step.get("run", ""))
+
+
+def test_a_tag_that_does_not_match_the_pyproject_version_fails_before_the_build() -> None:
+    package = workflow("release.yml")["jobs"]["package"]
+    check = tag_check(package)
+
+    assert check["if"] == "github.ref_type == 'tag'"
+    assert steps(package).index(check) < next(
+        i for i, step in enumerate(steps(package)) if step.get("run") == "make package"
+    )
+
+
+@pytest.mark.parametrize(("tag", "rc"), [(f"v{VERSION}", 0), ("v0.0.0", 1), (VERSION, 1)])
+def test_the_tag_check_accepts_only_v_and_the_pyproject_version(tag: str, rc: int) -> None:
+    check = tag_check(workflow("release.yml")["jobs"]["package"])
+    env = {"PATH": f"{Path(sys.executable).parent}:{SYSTEM_PATH}", "GITHUB_REF_NAME": tag}
+
+    result = run_script(["bash", "-e", "-c", check["run"]], env, ROOT)
+
+    assert result.returncode == rc, result.stdout + result.stderr
+    if rc:
+        assert f"::error::tag {tag} does not match version {VERSION}" in result.stdout
+
+
+def test_the_publish_job_attests_both_assets_before_releasing_them() -> None:
+    publish = workflow("release.yml")["jobs"]["publish"]
+    all_steps = steps(publish)
+
+    (attest,) = step_using(publish, ATTEST_ACTION)
+    assert attest["with"]["subject-path"].split() == RELEASE_ASSETS
+    release = next(step for step in all_steps if "gh release create" in step.get("run", ""))
+    assert all_steps.index(attest) < all_steps.index(release)
+    assert release["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert (
+        'gh release create "$TAG" --verify-tag --title "aiagent $TAG" --notes-file "$NOTES" '
+        + " ".join(RELEASE_ASSETS)
+    ) in " ".join(release["run"].split())
+    notes = next(step for step in all_steps if "release-notes.sh" in step.get("run", ""))
+    assert all_steps.index(notes) < all_steps.index(release)
+
+
+def test_no_other_workflow_attests_or_publishes() -> None:
+    for path in WORKFLOWS.glob("*.yml"):
+        if path.name == "release.yml":
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert ATTEST_ACTION not in text, path.name
+        assert "gh release" not in text, path.name
+        assert "id-token" not in text, path.name

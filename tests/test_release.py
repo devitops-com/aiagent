@@ -1,7 +1,9 @@
-"""release.sh's guards against throwaway git repos, a bare origin and a fake gh.
+"""release.sh and release-notes.sh against throwaway git repos, a bare origin and a fake gh.
 
-Every guard must stop the release before anything is built, committed, tagged, pushed or
-published. Everything lives under ``tmp_path``; nothing reaches GitHub.
+release.sh only tags: it promotes the CHANGELOG, commits, tags and pushes both atomically. The
+pushed tag triggers .github/workflows/release.yml, which builds, attests and publishes; release.sh
+then just follows that run. Every guard must stop the release before anything is committed,
+tagged or pushed. Everything lives under ``tmp_path``; nothing reaches GitHub.
 """
 
 from __future__ import annotations
@@ -23,19 +25,35 @@ from helpers_scripts import (
 )
 
 RELEASE_SH = ROOT / "tools" / "release" / "release.sh"
+RELEASE_NOTES_SH = ROOT / "tools" / "release" / "release-notes.sh"
 TAG = f"v{VERSION}"
+RUN_ID = "4242"
+REPO_URL = "https://github.com/devitops-com/aiagent"
 
-# A gh that is authenticated, logs every call and knows no release. Anything else (such as
-# `release create`) is not expected before the guards pass, and fails.
+# A gh that is authenticated, logs every call and knows no release. `run list` answers
+# $FAKE_GH_RUN_ID from its (FAKE_GH_RUN_AFTER + 1)th call on; `run watch` exits FAKE_GH_WATCH_RC.
+# Anything else (such as `release create`) is not expected from release.sh and fails.
 FAKE_GH = """\
 echo "$*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
   "auth status") ;;
   "repo view") echo devitops-com/aiagent ;;
-  "release view") [ -n "$FAKE_GH_RELEASE_EXISTS" ] || exit 1 ;;
+  "release view")
+    case "$*" in
+      *--json*) echo "https://github.com/devitops-com/aiagent/releases/tag/$3" ;;
+      *) [ -n "$FAKE_GH_RELEASE_EXISTS" ] || exit 1 ;;
+    esac ;;
+  "run list")
+    calls=$(cat "$FAKE_GH_LOG.runs" 2>/dev/null || echo 0)
+    echo $((calls + 1)) > "$FAKE_GH_LOG.runs"
+    if [ "$calls" -ge "${FAKE_GH_RUN_AFTER:-0}" ]; then echo "$FAKE_GH_RUN_ID"; fi ;;
+  "run watch") exit "${FAKE_GH_WATCH_RC:-0}" ;;
   *) exit 64 ;;
 esac
 """
+
+
+# ---------------------------------------------------------------------------------- release.sh
 
 RELEASED_ENTRY = "### Added\n- The first thing.\n- The second thing."
 
@@ -48,13 +66,16 @@ def git(repo: Path, *args: str, env: dict[str, str]) -> str:
 
 @pytest.fixture
 def release_env(tmp_path: Path) -> dict[str, str]:
-    """PATH with the fake gh, and git isolated from the user's and the system's config."""
+    """PATH with the fake gh, git isolated from the user's and the system's config, and no
+    waiting for a workflow run to show up."""
     write_program(tmp_path / "gh-bin" / "gh", FAKE_GH)
     return {
         "HOME": str(tmp_path / "home"),
         "PATH": f"{tmp_path / 'gh-bin'}:{SYSTEM_PATH}",
         "TMPDIR": str(tmp_path),
         "FAKE_GH_LOG": str(tmp_path / "gh.log"),
+        "FAKE_GH_RUN_ID": RUN_ID,
+        "AIAGENT_RELEASE_WATCH_WAIT": "0",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "test@example.invalid",
@@ -64,16 +85,14 @@ def release_env(tmp_path: Path) -> dict[str, str]:
 
 
 def make_release_repo(tmp_path: Path, env: dict[str, str], unreleased: str) -> Path:
-    """A repo on main, in sync with a bare 'origin' under tmp_path, carrying the real release.sh
-    and a tools/package/build-binary.sh that only leaves a marker and an empty installer."""
+    """A repo on main, in sync with a bare 'origin' under tmp_path, carrying the real release
+    scripts and a tools/package/build-binary.sh that only leaves a marker (CI builds now)."""
     repo, origin = tmp_path / "repo", tmp_path / "origin.git"
     (repo / "tools" / "release").mkdir(parents=True)
     shutil.copy2(RELEASE_SH, repo / "tools" / "release" / "release.sh")
+    shutil.copy2(RELEASE_NOTES_SH, repo / "tools" / "release" / "release-notes.sh")
     shutil.copy2(INSTALL_SH, repo / "install.sh")
-    write_program(
-        repo / "tools" / "package" / "build-binary.sh",
-        "touch ../build-ran && mkdir -p dist && : > dist/aiagent-install.sh\n",
-    )
+    write_program(repo / "tools" / "package" / "build-binary.sh", "touch ../build-ran\n")
     (repo / "pyproject.toml").write_text(f'[project]\nname = "aiagent"\nversion = "{VERSION}"\n')
     (repo / ".gitignore").write_text("dist/\n")
     (repo / "CHANGELOG.md").write_text(changelog(unreleased))
@@ -111,7 +130,7 @@ def gh_calls(tmp_path: Path) -> list[str]:
 
 
 def assert_nothing_built_or_published(tmp_path: Path) -> None:
-    assert not (tmp_path / "build-ran").exists()
+    assert not (tmp_path / "build-ran").exists()  # the release workflow builds, not release.sh
     assert not [call for call in gh_calls(tmp_path) if call.startswith("release create")]
 
 
@@ -122,7 +141,18 @@ def assert_nothing_committed_or_pushed(repo: Path, tmp_path: Path, env: dict[str
     origin = tmp_path / "origin.git"
     assert git(origin, "log", "--format=%s", "main", env=env) == "initial"
     assert git(origin, "tag", "--list", env=env) == ""
-    assert not [call for call in gh_calls(tmp_path) if call.startswith("release create")]
+    assert_nothing_built_or_published(tmp_path)
+    assert not [call for call in gh_calls(tmp_path) if call.startswith("run ")]
+
+
+def assert_released_at_origin(repo: Path, tmp_path: Path, env: dict[str, str]) -> None:
+    """The release commit and the annotated tag, both on origin, both at HEAD."""
+    assert git(repo, "log", "-1", "--format=%s", env=env) == f"chore: release {TAG}"
+    assert git(repo, "cat-file", "-t", TAG, env=env) == "tag"  # annotated
+    assert git(repo, "tag", "-l", "--format=%(contents:subject)", TAG, env=env) == f"aiagent {TAG}"
+    head = git(repo, "rev-parse", "HEAD", env=env)
+    origin = tmp_path / "origin.git"
+    assert git(origin, "rev-parse", "main", f"{TAG}^{{commit}}", env=env).split() == [head, head]
 
 
 def test_release_refuses_to_run_off_main(tmp_path: Path, release_env: dict[str, str]) -> None:
@@ -272,3 +302,185 @@ def test_release_promotes_unreleased_and_reverts_it_when_the_commit_fails(
     assert "Reverted CHANGELOG.md" in result.stderr
     assert (repo / "CHANGELOG.md").read_text() == changelog(RELEASED_ENTRY)
     assert_nothing_committed_or_pushed(repo, tmp_path, release_env)
+
+
+def test_release_commits_tags_and_pushes_without_building_or_publishing(
+    tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    """The tag push is the release: CI builds, attests and publishes. release.sh follows the
+    workflow run the tag triggered and prints the release URL."""
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY)
+
+    result = run_release(repo, release_env)
+
+    assert result.returncode == 0, result.stderr
+    assert f"## [{VERSION}] - " in (repo / "CHANGELOG.md").read_text()
+    assert_released_at_origin(repo, tmp_path, release_env)
+    assert_nothing_built_or_published(tmp_path)
+    head = git(repo, "rev-parse", "HEAD", env=release_env)
+    (run_list,) = [call for call in gh_calls(tmp_path) if call.startswith("run list")]
+    for option in ("--workflow release.yml", f"--branch {TAG}", f"--commit {head}", "--event push"):
+        assert option in run_list
+    assert f"run watch {RUN_ID} --exit-status" in gh_calls(tmp_path)
+    assert f"{REPO_URL}/releases/tag/{TAG}" in result.stdout
+
+
+def test_release_waits_for_the_workflow_run_to_show_up(
+    tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    """GitHub creates the run a few seconds after the push."""
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY)
+    env = release_env | {"FAKE_GH_RUN_AFTER": "1", "AIAGENT_RELEASE_WATCH_WAIT": "30"}
+
+    result = run_release(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert len([call for call in gh_calls(tmp_path) if call.startswith("run list")]) == 2
+    assert f"run watch {RUN_ID} --exit-status" in gh_calls(tmp_path)
+
+
+@pytest.mark.parametrize("answer", ["", "null"], ids=["empty", "null"])
+def test_release_succeeds_when_no_workflow_run_shows_up(
+    answer: str, tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    """The tag is pushed and the workflow will run; only following it is not possible."""
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY)
+
+    result = run_release(repo, release_env | {"FAKE_GH_RUN_ID": answer})
+
+    assert result.returncode == 0, result.stderr
+    assert_released_at_origin(repo, tmp_path, release_env)
+    assert f"{REPO_URL}/actions/workflows/release.yml" in result.stdout
+    assert not [call for call in gh_calls(tmp_path) if call.startswith("run watch")]
+
+
+def test_release_reports_a_failed_workflow_run_with_its_recovery(
+    tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY)
+
+    result = run_release(repo, release_env | {"FAKE_GH_WATCH_RC": "1"})
+
+    assert result.returncode == 1
+    assert_released_at_origin(repo, tmp_path, release_env)  # the tag stays pushed
+    assert f"{TAG} is pushed but not published" in result.stderr
+    assert f"gh run view {RUN_ID} --log-failed" in result.stderr
+    assert f"gh run rerun {RUN_ID} --failed" in result.stderr
+    assert f"git push origin :refs/tags/{TAG}" in result.stderr
+
+
+def test_release_pushes_commit_and_tag_atomically(
+    tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    """origin refuses the tag: main must not move either, or a half-release would sit on main."""
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY)
+    write_program(
+        tmp_path / "origin.git" / "hooks" / "update",
+        'case "$1" in refs/tags/*) echo "tags are frozen" >&2; exit 1 ;; esac\n',
+    )
+
+    result = run_release(repo, release_env)
+
+    assert result.returncode == 1
+    assert "push failed" in result.stderr
+    origin = tmp_path / "origin.git"
+    assert git(origin, "log", "--format=%s", "main", env=release_env) == "initial"
+    assert git(origin, "tag", "--list", env=release_env) == ""
+    assert git(repo, "log", "-1", "--format=%s", env=release_env) == f"chore: release {TAG}"
+    assert f"git tag -d {TAG} && git reset --hard HEAD~1" in result.stderr
+    assert f"git push --atomic origin main {TAG}" in result.stderr
+    assert "gh release create" not in result.stderr
+    assert_nothing_built_or_published(tmp_path)
+    assert not [call for call in gh_calls(tmp_path) if call.startswith("run ")]
+
+
+# --------------------------------------------------------------------------- release-notes.sh
+
+NOTES_CHANGELOG = """\
+# Changelog
+
+## [Unreleased]
+
+## [0.2.0] - 2026-09-24
+
+### Fixed
+- Two.
+
+## [0.1.10] - 2026-05-01
+
+- Ten.
+
+## [0.1.0]
+
+### Added
+- One.
+"""
+
+
+def run_notes(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text(NOTES_CHANGELOG)
+    return run_script(["bash", str(RELEASE_NOTES_SH), *args, str(path)], {"PATH": SYSTEM_PATH})
+
+
+@pytest.mark.parametrize(
+    ("version", "notes"),
+    [
+        ("0.2.0", "### Fixed\n- Two.\n"),
+        ("0.1.10", "- Ten.\n"),
+        ("0.1.0", "### Added\n- One.\n"),  # the last section, without a date
+    ],
+)
+def test_release_notes_prints_exactly_the_versions_section(
+    version: str, notes: str, tmp_path: Path
+) -> None:
+    result = run_notes(tmp_path, version)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == notes
+
+
+@pytest.mark.parametrize("version", ["0.1", "0.1.1", "0.3.0"])
+def test_release_notes_refuses_a_version_without_a_section(version: str, tmp_path: Path) -> None:
+    result = run_notes(tmp_path, version)
+
+    assert result.returncode == 1
+    assert f"no '## [{version}]' section in" in result.stderr
+    assert result.stdout == ""
+
+
+def test_release_notes_refuses_an_empty_section(tmp_path: Path) -> None:
+    result = run_notes(tmp_path, "Unreleased")
+
+    assert result.returncode == 1
+    assert "'## [Unreleased]' section in" in result.stderr
+    assert "is empty" in result.stderr
+
+
+def test_release_notes_reads_the_projects_changelog_by_default(tmp_path: Path) -> None:
+    """Whatever [Unreleased] holds right now (it is empty right after a release)."""
+    explicit = run_script(
+        ["bash", str(RELEASE_NOTES_SH), "Unreleased", str(ROOT / "CHANGELOG.md")],
+        {"PATH": SYSTEM_PATH},
+        cwd=tmp_path,
+    )
+
+    default = run_script(
+        ["bash", str(RELEASE_NOTES_SH), "Unreleased"], {"PATH": SYSTEM_PATH}, cwd=tmp_path
+    )
+
+    assert (default.returncode, default.stdout, default.stderr) == (
+        explicit.returncode,
+        explicit.stdout,
+        explicit.stderr,
+    )
+    assert default.returncode in (0, 1)
+    assert default.stdout or "is empty" in default.stderr
+
+
+@pytest.mark.parametrize("args", [[], ["1.0.0", "CHANGELOG.md", "extra"]], ids=["none", "three"])
+def test_release_notes_rejects_bad_usage(args: list[str]) -> None:
+    result = run_script(["bash", str(RELEASE_NOTES_SH), *args], {"PATH": SYSTEM_PATH})
+
+    assert result.returncode == 2
+    assert "usage: release-notes.sh VERSION [CHANGELOG]" in result.stderr
