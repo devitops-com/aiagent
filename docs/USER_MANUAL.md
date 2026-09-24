@@ -617,7 +617,7 @@ fresh via `--new`.
 ## Development
 
 ```bash
-make dev-install     # .venv with aiagent + dev deps (uv, editable)
+make dev-install     # fresh .venv on .python-version with aiagent + dev deps (uv, editable)
 make check           # ruff + mypy (strict)
 make test            # pytest (hermetic; live devai tests are opt-in: -m live)
 make test-cov        # pytest with coverage gate (85%)
@@ -627,7 +627,11 @@ make package         # build dist/aiagent-install.sh
 make release         # tag + publish GitHub release with the installer asset
 ```
 
-Requires `uv` and Python 3.14. Tests are hermetic by default: LLM-driven CLI
+Requires `uv`, which also installs Python 3.14.7, the exact version in
+`.python-version`. The tests fail on any other interpreter (a `.venv` from before a
+pin bump): re-run `make dev-install`, which recreates `.venv`. A patch bump of
+`.python-version` may need a newer uv, which only knows the CPython patches
+published before it. Tests are hermetic by default: LLM-driven CLI
 commands use `dspy.utils.DummyLM`, `doctor`/`models` use an httpx mock, and an
 autouse fixture neutralizes env/TOML/skills-dir so nothing leaks in. Live devai
 tests (`pytest -m live`) must run inside the `devai-net` network.
@@ -638,7 +642,8 @@ tests (`pytest -m live`) must run inside the `devai-net` network.
 
 `make package` produces `dist/aiagent-install.sh` — a single **makeself**
 self-extracting, run-once installer (**linux-x86_64**, ~71 MB). It carries a
-relocatable CPython 3.14 with aiagent and every dependency,
+relocatable CPython (exactly the X.Y.Z in `.python-version`, now 3.14.7; the build
+fails on any other) with aiagent and every dependency,
 **sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The heavy
 tree is **zstd -19** compressed and decompressed at install time by a **bundled
 static zstd**, so the target host needs neither Python nor zstd. makeself adds a

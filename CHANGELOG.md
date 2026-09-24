@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **The bundled CPython is pinned exactly: 3.14.7** (`.python-version`, the one
+  pin for the dev venv, CI, the locks and the installer; `requires-python` stays
+  `>=3.14`). The build took its interpreter from `uv python find 3.14`, which
+  returns the project's `.venv` when there is one, so it shipped whatever patch
+  that venv was made on, and it hid uv's errors. It now stages uv's managed
+  CPython, fails unless it is exactly the pin, and shows uv's reason when uv cannot
+  install it. `make dev-install` recreates `.venv` on the pin (`uv venv --clear`)
+  instead of keeping one on another patch, and the tests fail on any other
+  interpreter.
 - **`make lock` takes `LOCK_ARGS`.** uv keeps the pins already in the lock
   files, so a plain `make lock` never moved anyio. Pass the upgrade through:
   `make lock LOCK_ARGS='--upgrade-package anyio'` (or `--upgrade` to re-resolve

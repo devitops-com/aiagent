@@ -6,6 +6,7 @@ tools/package/build-binary.sh, run with fake tools, builds from those locks.
 
 from __future__ import annotations
 
+import platform
 import re
 import shutil
 import subprocess
@@ -120,29 +121,102 @@ def test_the_locks_satisfy_what_pyproject_declares(lock: str, requirements: list
         )
 
 
+# --------------------------------------------------------------------------- the pinned CPython
+
+
+def test_python_version_file_pins_an_exact_cpython_on_the_requires_python_floor() -> None:
+    """.python-version is the one exact pin (dev venv, CI, the locks, the bundled interpreter);
+    the package metadata keeps the X.Y floor."""
+    match = re.fullmatch(r"(3\.\d+)\.\d+", PINNED_PYTHON)
+
+    assert match is not None, f".python-version must be a full X.Y.Z, got {PINNED_PYTHON!r}"
+    minor = match.group(1)
+    assert PYPROJECT["project"]["requires-python"] == f">={minor}"
+    assert f"Programming Language :: Python :: {minor}" in PYPROJECT["project"]["classifiers"]
+
+
+def test_the_suite_runs_on_exactly_the_pinned_cpython() -> None:
+    """The tests run on the CPython the installer ships: CI's setup-python reads .python-version,
+    locally `make dev-install` makes the venv on it. After a pin bump, re-run dev-install."""
+    assert platform.python_version() == PINNED_PYTHON, "stale .venv? run `make dev-install`"
+
+
+def run_make_dev_install(tmp_path: Path, uv_venv: str) -> subprocess.CompletedProcess[str]:
+    """`make dev-install` on a copy of the Makefile and .python-version with a fake uv that logs
+    each call to uv.log and runs the shell code ``uv_venv`` for `uv venv`."""
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("Makefile", ".python-version"):
+        shutil.copy2(ROOT / name, project / name)
+    uv = write_program(
+        tmp_path / "bin" / "uv",
+        f'echo "$*" >> "{tmp_path / "uv.log"}"\n[ "$1" != venv ] || {{ {uv_venv}; }}\n',
+    )
+    return run_script(
+        ["make", "-s", "dev-install"], {"PATH": f"{uv.parent}:{SYSTEM_PATH}"}, cwd=project
+    )
+
+
+def test_make_dev_install_recreates_the_venv_on_exactly_the_pinned_cpython(tmp_path: Path) -> None:
+    """A .venv made on another patch (before a pin bump, or on uv's floating 3.X link) must not
+    survive: the checks and tests would run on a CPython the installer does not ship."""
+    result = run_make_dev_install(tmp_path, uv_venv="exit 0")
+
+    assert result.returncode == 0, result.stderr
+    venv, *installs = calls(tmp_path, "uv")
+    assert venv[0] == "venv"
+    assert "--clear" in venv
+    assert venv[venv.index("--python") + 1] == PINNED_PYTHON
+    assert installs and all(call[:2] == ["pip", "install"] for call in installs)
+
+
+def test_make_dev_install_stops_with_uvs_reason_when_it_cannot_make_the_venv(
+    tmp_path: Path,
+) -> None:
+    """E.g. a uv too old to know the pinned CPython, or Python downloads disabled: uv's own error,
+    not a later, misleading one from installing into a venv that is not there (or is stale)."""
+    result = run_make_dev_install(tmp_path, uv_venv=f'echo "{UV_CANNOT_DOWNLOAD}" >&2; exit 2')
+
+    assert result.returncode != 0
+    assert UV_CANNOT_DOWNLOAD in result.stderr.splitlines()
+    assert [call[0] for call in calls(tmp_path, "uv")] == ["venv"]
+
+
 # ------------------------------------------------------------- build-binary.sh with fake tools
 
 BUILD_BINARY = ROOT / "tools" / "package" / "build-binary.sh"
+CHECK_PYTHON = ROOT / "tools" / "package" / "check-python.sh"
+STARTUP_IN = ROOT / "tools" / "package" / "startup.sh.in"
 WHEEL = f"aiagent-{VERSION}-py3-none-any.whl"
-MINOR = ".".join(PINNED_PYTHON.split(".")[:2])
+MINOR = PINNED_PYTHON.rsplit(".", 1)[0]
 PIP_CHECK_OK = 'echo "No broken requirements found."'
+UV_CANNOT_DOWNLOAD = f"error: No download found for request: cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
 
 
 def fake_build_project(
-    tmp_path: Path, pip_check: str = PIP_CHECK_OK
+    tmp_path: Path,
+    pip_check: str = PIP_CHECK_OK,
+    staged_version: str = PINNED_PYTHON,
+    uv_python_install: str = "exit 0",
 ) -> tuple[Path, dict[str, str]]:
-    """A project with the real build-binary.sh and just enough around it (the locks, makeself,
-    x86_64), and fake tools that log to ``tmp_path``:
+    """A project with the real build-binary.sh and just enough around it (the locks, a cached
+    zstd, x86_64), and fake tools that log to ``tmp_path``:
 
-    - uv (uv.log) builds an empty wheel and has a fake uv-managed CPython
-    - that CPython's python (python.log) prints its prefix and fakes pip (``pip_check`` is the
-      shell code for ``pip check``; pip is gone once the build strips it); everything else goes
-      to the interpreter running the tests
-    - curl fails, so a build without a cached zstd stops there
+    - uv (uv.log) builds an empty wheel, runs the shell code ``uv_python_install`` for
+      `uv python install` and finds a fake uv-managed CPython
+    - that CPython's python (python.log) prints its prefix, reports ``staged_version`` and fakes
+      pip (``pip_check`` is the shell code for `pip check`; pip is gone once the build strips it);
+      everything else goes to the interpreter running the tests
+    - curl fails, so a build without a usable cached zstd stops there
+    - the cached zstd stores and cats instead of compressing
+    - makeself copies what it packs to ``tmp_path/mkself`` and writes an installer that lays down
+      a fake aiagent and bundled python, which log each run and its HOME and AIAGENT_* to
+      smoke.log
     """
     project = tmp_path / "project"
     (project / "tools" / "package").mkdir(parents=True)
-    shutil.copy2(BUILD_BINARY, project / "tools" / "package" / "build-binary.sh")
+    for script in (BUILD_BINARY, CHECK_PYTHON, STARTUP_IN):
+        shutil.copy2(script, project / "tools" / "package" / script.name)
     shutil.copy2(ROOT / ".python-version", project / ".python-version")
     (project / "pyproject.toml").write_text(f'[project]\nname = "aiagent"\nversion = "{VERSION}"\n')
     (project / "requirements.txt").write_text("dspy==3.2.1\n")
@@ -154,6 +228,7 @@ def fake_build_project(
 here="$(cd "$(dirname "$0")/.." && pwd)"
 case "$*" in
     *sys.base_prefix*) echo "$here" ;;
+    *"platform.python_version()"*) echo "{staged_version}" ;;
     "-m pip "*)
         [ -d "$here/lib/python{MINOR}/site-packages/pip" ] \\
             || {{ echo "$0: No module named pip" >&2; exit 1; }}
@@ -167,16 +242,59 @@ esac
 """,
     )
     (python / "lib" / f"python{MINOR}" / "site-packages" / "pip").mkdir(parents=True)
+    write_program(
+        project / ".cache" / "aiagent-build" / "zstd-static-x86_64",
+        """case "$1" in
+    --version) echo "*** Zstandard CLI (64-bit) v1.5.6, by Yann Collet ***" ;;
+    -dc) cat "$2" ;;
+    *) for out; do :; done; cat > "$out" ;;
+esac
+""",
+    )
+    smoke_log = tmp_path / "smoke.log"
+    logged = f'echo "$(basename "$0") $* HOME=$HOME $(env | grep ^AIAGENT_ | sort)" >> "{smoke_log}"'
+    fakes = tmp_path / "installed"
+    write_program(
+        fakes / "aiagent",
+        f"""{logged}
+case "$1" in
+    version) echo "{VERSION}" ;;
+    run) echo "Usage: aiagent run [OPTIONS] SKILL" ;;
+    skills) echo "extract" ;;
+esac
+""",
+    )
+    write_program(fakes / f"python{MINOR}", f"{logged}\n")
+    installer = write_program(
+        tmp_path / "installer.sh",
+        f"""TMPROOT=${{TMPDIR:=/var/tmp}}
+umask 022
+mkdir -p "$AIAGENT_PREFIX/bin" "$AIAGENT_PREFIX/lib/aiagent/bin"
+cp "{fakes / "aiagent"}" "$AIAGENT_PREFIX/bin/"
+cp "{fakes / f"python{MINOR}"}" "$AIAGENT_PREFIX/lib/aiagent/bin/"
+""",
+    )
     bin_dir = tmp_path / "bin"
     write_program(bin_dir / "uname", "echo x86_64\n")
-    write_program(bin_dir / "makeself", "exit 0\n")
+    write_program(
+        bin_dir / "makeself",
+        f"""while [ "${{1#--}}" != "$1" ]; do
+    case "$1" in --header|--tar-extra) shift ;; esac
+    shift
+done
+cp -R "$1" "{tmp_path / "mkself"}"
+cp "{installer}" "$2"
+""",
+    )
     (bin_dir / "makeself-header.sh").write_text("TMPROOT=\\${TMPDIR:=/tmp}\n")
     write_program(bin_dir / "curl", 'echo "curl: (6) no network in the tests" >&2; exit 6\n')
     write_program(
         bin_dir / "uv",
         f"""echo "$*" >> "{tmp_path / "uv.log"}"
 case "$1 $2" in
+    "--version ") echo "uv 0.0.1" ;;
     "build --wheel") while [ $# -gt 1 ]; do [ "$1" != -o ] || : > "$2/{WHEEL}"; shift; done ;;
+    "python install") {uv_python_install} ;;
     "python find") echo "{python / "bin" / f"python{MINOR}"}" ;;
     "python dir") echo "{python.parent}" ;;
 esac
@@ -263,3 +381,93 @@ def test_pip_check_runs_before_the_build_strips_pip_and_the_aws_subtree(tmp_path
     assert ["-m", "pip", "check"] in calls(tmp_path, "python")
     assert "No module named pip" not in result.stderr
     assert "==> Precompiling all modules" in result.stdout
+
+
+def test_the_build_refuses_a_python_version_that_is_not_an_exact_x_y_z(tmp_path: Path) -> None:
+    project, env = fake_build_project(tmp_path)
+    (project / ".python-version").write_text(f"{MINOR}\n")
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert f"ERROR: .python-version must pin an exact CPython X.Y.Z, got '{MINOR}'" in (
+        result.stderr
+    )
+    assert calls(tmp_path, "uv") == []
+
+
+def test_the_build_stops_with_uvs_reason_when_uv_cannot_install_the_pinned_cpython(
+    tmp_path: Path,
+) -> None:
+    """A patch bump of .python-version needs a uv that knows the new CPython: the error says so
+    instead of a bare 'No interpreter found'."""
+    project, env = fake_build_project(
+        tmp_path, uv_python_install=f'echo "{UV_CANNOT_DOWNLOAD}" >&2; exit 2'
+    )
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert UV_CANNOT_DOWNLOAD in result.stderr.splitlines()
+    assert f"ERROR: uv 0.0.1 cannot install CPython {PINNED_PYTHON} (.python-version): update uv" in (
+        result.stderr
+    )
+    uv = calls(tmp_path, "uv")
+    assert ["python", "install", PINNED_PYTHON] in uv
+    assert not [call for call in uv if call[:2] == ["python", "find"]]
+
+
+def test_the_build_stages_a_uv_managed_cpython_never_the_project_venv(tmp_path: Path) -> None:
+    """`uv python find` alone returns the project's .venv when there is one, and the build then
+    copied that venv's base_prefix: whatever patch the venv was made on."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    finds = [call for call in calls(tmp_path, "uv") if call[:2] == ["python", "find"]]
+    assert finds == [["python", "find", "--system", "--managed-python", PINNED_PYTHON]]
+
+
+def test_the_build_refuses_an_interpreter_that_resolves_outside_uvs_python_dir(
+    tmp_path: Path,
+) -> None:
+    project, env = fake_build_project(tmp_path)
+    managed = tmp_path / "uv-python" / f"cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
+    elsewhere = tmp_path / "elsewhere" / managed.name
+    elsewhere.parent.mkdir()
+    managed.rename(elsewhere)
+    managed.symlink_to(elsewhere)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert f"ERROR: {elsewhere} is not a uv-managed CPython" in result.stderr
+    assert not (project / "dist" / ".build" / "python").exists()
+
+
+def test_the_build_refuses_a_staged_interpreter_of_another_patch(tmp_path: Path) -> None:
+    project, env = fake_build_project(tmp_path, staged_version=f"{MINOR}.0")
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert (
+        f"ERROR: the staged interpreter is CPython {MINOR}.0, .python-version pins {PINNED_PYTHON}"
+        in result.stderr
+    )
+
+
+def test_the_installer_and_the_smoke_test_use_the_x_y_of_the_pinned_cpython(
+    tmp_path: Path,
+) -> None:
+    """The bundle's paths are pythonX.Y (bin/python3.14, lib/python3.14), never pythonX.Y.Z."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    startup = (tmp_path / "mkself" / "startup.sh").read_text().splitlines()
+    assert startup[:3] == ["#!/bin/sh", f"AIAGENT_VERSION={VERSION}", f"PYVER={MINOR}"]
+    smoke = (tmp_path / "smoke.log").read_text().splitlines()
+    assert any(line.startswith(f"python{MINOR} -I ") for line in smoke)
