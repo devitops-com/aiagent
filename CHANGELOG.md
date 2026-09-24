@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-24
+
 ### Added
 - **Verifiable releases.** GitHub Actions builds every release from its tag and
   attests `aiagent-install.sh` and `install.sh` (build provenance, signed through
