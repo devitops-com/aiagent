@@ -52,6 +52,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `requirements-build.txt` (hatchling and its dependencies, from `[build-system]`),
   and `make package` builds the aiagent wheel with exactly those, hash-checked,
   instead of whatever the index served at build time.
+- **The installer bundles exactly the hashed lock.** The build used
+  `requirements.txt` only as version constraints for pip's resolver, so the
+  artifacts were not hash-checked, an sdist could build with unchecked build
+  dependencies, and a dependency missing from the lock installed unpinned. It now
+  installs the lock `--require-hashes --no-deps --only-binary :all:` and fails
+  when `pip check` finds a requirement the lock does not satisfy.
 - **A root or system install is owned by root and not group-writable.** The
   payload carried the build user's uid/gid and group-writable modes, which tar
   restores when run as root, so on an image install (`AIAGENT_PREFIX=/usr/local`)

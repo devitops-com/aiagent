@@ -147,7 +147,10 @@ makes boto3 a core dep since 1.98 but imports it
 lazily, and the local router never takes that path); must stay **torch-free**
 (build guards enforce it). The strip set lives once in `STRIP_ABSENT`
 (`build-binary.sh`) and feeds both the removal and the audit's allow-list.
-Deps install with **`--no-cache-dir`** (always fresh from the configured index).
+Deps install **hash-checked** from `requirements.txt` (`--require-hashes`, wheels only,
+`--no-deps`; the aiagent wheel `--no-deps` too) with **`--no-cache-dir`** (always
+fresh from the configured index); `pip check` must then report nothing, before pip
+and the `STRIP_ABSENT` strips go (those leave boto3/hf-xet unmet on purpose).
 The aiagent wheel is built by the hash-pinned backend of `requirements-build.txt`
 (`uv build --build-constraints … --require-hashes`), never one freshly resolved.
 The build then installs to a temp prefix and **audits every module against

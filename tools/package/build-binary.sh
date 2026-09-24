@@ -10,8 +10,8 @@
 # The payload is owned by root:root with modes u+rwX,go+rX,go-w.
 #
 # Build deps: uv, makeself, curl, gcc/make (to build the static zstd once).
-# Run `make lock` first (produces requirements.txt for the constraints step, and
-# requirements-build.txt, which pins the build backend that builds the aiagent wheel).
+# Run `make lock` first (requirements.txt is installed hash-checked, and
+# requirements-build.txt pins the build backend that builds the aiagent wheel).
 set -euo pipefail
 export PYTHONNOUSERSITE=1   # hermetic build: never satisfy deps from the user site
 
@@ -29,7 +29,6 @@ PY_NODOT="${PY_VERSION/./}"
 DIST="$ROOT/dist"
 STAGE="$DIST/.build"
 MKDIR="$DIST/.mkself"
-CONSTRAINTS="$DIST/constraints.txt"
 STARTUP_IN="$ROOT/tools/package/startup.sh.in"
 OUT="$DIST/$APP-install.sh"
 REQ="$ROOT/requirements.txt"
@@ -40,10 +39,10 @@ ZSTD_VERSION="1.5.6"
 ZSTD_SHA256="8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1"
 
 # Distributions the build deliberately removes from the bundle. Named once here
-# so the removal (step 6c) and the version audit's allow-list (step 13) cannot
+# so the removal (step 5c) and the version audit's allow-list (step 12) cannot
 # drift apart — a strip the audit doesn't know about fails the build as MISSING.
 #   hf-xet     HuggingFace Hub Xet accelerator; aiagent never hits the Hub.
-#   boto3 ...  the AWS/Bedrock subtree; see step 6c.
+#   boto3 ...  the AWS/Bedrock subtree; see step 5c.
 STRIP_ABSENT="hf-xet boto3 botocore jmespath python-dateutil s3transfer six"
 
 VERSION="$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | cut -d'"' -f2)"
@@ -68,7 +67,7 @@ fi
 echo "==> $APP $VERSION -> makeself installer (CPython $PY_VERSION, sourceless, zstd -19)"
 
 # --- 1. Clean ------------------------------------------------------------
-rm -rf "$STAGE" "$MKDIR" "$CONSTRAINTS" build src/*.egg-info
+rm -rf "$STAGE" "$MKDIR" build src/*.egg-info
 mkdir -p "$STAGE" "$MKDIR" "$CACHE"
 HEADER="$STAGE/makeself-header.sh"   # beside the payload dirs, not in the payload
 # shellcheck disable=SC2016  # the ${TMPDIR:=...} text is matched and written literally
@@ -84,10 +83,7 @@ echo "==> Building $APP wheel (hash-pinned build backend)"
 uv build --wheel --build-constraints "$BUILD_REQ" --require-hashes -o "$DIST" >/dev/null
 WHEEL="$(ls "$DIST"/${APP}-${VERSION}-*.whl)"
 
-# --- 3. Pin dependency versions from the project lock -------------------
-grep -E '^[A-Za-z0-9._-]+==' "$REQ" | sed -E 's/[[:space:]]*\\$//' > "$CONSTRAINTS"
-
-# --- 4. Stage a standalone, relocatable CPython -------------------------
+# --- 3. Stage a standalone, relocatable CPython -------------------------
 uv python install "$PY_VERSION" >/dev/null 2>&1 || true
 PYBIN="$(uv python find "$PY_VERSION")"
 BASEP="$("$PYBIN" -c 'import sys; print(sys.base_prefix)')"
@@ -96,7 +92,7 @@ cp -a "$BASEP" "$STAGE/python"
 PY="$STAGE/python/bin/python${PY_VERSION}"
 rm -f "$STAGE/python/lib/python${PY_VERSION}/EXTERNALLY-MANAGED"
 
-# --- 5. Prune unused stdlib (incl. Tcl/Tk v8 AND v9) --------------------
+# --- 4. Prune unused stdlib (incl. Tcl/Tk v8 AND v9) --------------------
 ( cd "$STAGE/python/lib/python${PY_VERSION}" && rm -rf \
     test tkinter turtledemo idlelib lib2to3 ensurepip \
     config-${PY_VERSION}-*-linux-gnu 2>/dev/null || true )
@@ -105,24 +101,40 @@ rm -f "$STAGE/python/lib/python${PY_VERSION}/EXTERNALLY-MANAGED"
 ( cd "$STAGE/python/lib" && rm -rf \
     tcl8* tk8* tcl9* tk9* Tix* itcl* tdbc* thread* libtcl* libtk* 2>/dev/null || true )
 
-# --- 5b. Reset site-packages to a clean baseline (keep only pip) --------
+# --- 4b. Reset site-packages to a clean baseline (keep only pip) --------
 ( cd "$STAGE/python/lib/python${PY_VERSION}/site-packages" && for d in *; do
     case "$d" in pip|pip-*|__pycache__) ;; *) rm -rf "$d" ;; esac
   done )
 
-# --- 6. Install aiagent + deps into the staged interpreter -------------
+# --- 5. Install the locked dependencies, then aiagent ------------------
+# --require-hashes: exactly the artifacts pinned in requirements.txt. --no-deps: pip
+# adds nothing on its own (a dependency missing from the lock fails pip check below).
 # --no-cache-dir: never reuse the build host's pip cache — always fetch the
 # current artifacts through the configured index/proxy, so a stale or poisoned
-# cached wheel body can't ship (the metadata/code split behind v0.1.0). The
-# bundle's module versions are then verified against the lock in step 13.
-echo "==> Installing $APP + dependencies (no cache; fresh from the configured index)"
-"$PY" -m pip install --no-input --disable-pip-version-check --no-warn-script-location \
-    --no-cache-dir --no-compile "$WHEEL" -c "$CONSTRAINTS" >/dev/null
+# cached wheel body can't ship (the metadata/code split behind v0.1.0).
+# --only-binary: never build an sdist here, whose build dependencies pip would
+# fetch without hash checks. The bundle's module versions are then verified
+# against the lock in step 12.
+echo "==> Installing $APP + dependencies (hash-checked wheels, --no-deps, no cache)"
+PIP=("$PY" -m pip install --no-input --disable-pip-version-check --no-warn-script-location
+     --no-cache-dir --no-compile --no-deps --only-binary :all:)
+"${PIP[@]}" --require-hashes -r "$REQ" >/dev/null
+"${PIP[@]}" "$WHEEL" >/dev/null
+
+# --no-deps skipped pip's resolver, so prove the lock is complete. Before pip and
+# the strips below go: those leave litellm's boto3 and huggingface-hub's hf-xet
+# unmet on purpose.
+if ! check="$("$PY" -m pip check 2>&1)" || [ "$check" != "No broken requirements found." ]; then
+    echo "ERROR: requirements.txt is incomplete (pip check):" >&2
+    printf '%s\n' "$check" >&2
+    exit 1
+fi
+
 SP="$STAGE/python/lib/python${PY_VERSION}/site-packages"
 ( cd "$SP" && rm -rf pip setuptools wheel pkg_resources _distutils_hack 2>/dev/null || true )
 find "$SP" -name direct_url.json -delete 2>/dev/null || true
 
-# --- 6b. Strip dead weight ---------------------------------------------
+# --- 5b. Strip dead weight ---------------------------------------------
 # Keep numpy / tokenizers / tiktoken — needed for future ML features (RAG).
 [ -d "$SP/torch" ] && { echo "ERROR: torch leaked into the bundle" >&2; exit 1; }
 echo "==> Stripping dead weight (dep CLIs, headers, hf_xet, dep tests)"
@@ -135,7 +147,7 @@ find "$SP" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 # hf_xet: HuggingFace Hub Xet download accelerator — aiagent never hits the Hub.
 rm -rf "$SP/hf_xet" "$SP"/hf_xet-*.dist-info 2>/dev/null || true
 
-# --- 6c. Strip the AWS/Bedrock subtree ---------------------------------
+# --- 5c. Strip the AWS/Bedrock subtree ---------------------------------
 # litellm 1.98 promoted boto3 from an extra to a core dependency, for its AWS
 # Bedrock provider. aiagent only ever talks to the local devai router, so that
 # path is never taken, and litellm imports boto3 lazily (inside the Bedrock
@@ -156,16 +168,16 @@ for leftover in boto3 botocore jmespath dateutil s3transfer six.py; do
     [ -e "$SP/$leftover" ] && { echo "ERROR: $leftover survived the AWS strip" >&2; exit 1; }
 done
 
-# --- 7. Sanity-check the staged interpreter ----------------------------
+# --- 6. Sanity-check the staged interpreter ----------------------------
 # NB: do NOT `strip` libpython — it corrupts PBS symbol-version tables.
 "$PY" -I -c "import sqlite3, ssl, ctypes" \
     || { echo "ERROR: staged interpreter is not functional" >&2; exit 1; }
 
-# --- 8. Precompile EVERYTHING (unchecked-hash, relative paths) ----------
+# --- 7. Precompile EVERYTHING (unchecked-hash, relative paths) ----------
 echo "==> Precompiling all modules"
 "$PY" -m compileall -q -f -j 0 -s "$STAGE/python" --invalidation-mode unchecked-hash "$STAGE/python" >/dev/null 2>&1 || true
 
-# --- 8b. Drop .py sources: relocate to sourceless .pyc, delete .py ------
+# --- 7b. Drop .py sources: relocate to sourceless .pyc, delete .py ------
 echo "==> Dropping .py sources (sourceless .pyc)"
 "$PY" -I - "$STAGE/python" "$PY_NODOT" <<'PYEOF'
 import os, sys
@@ -189,11 +201,11 @@ for dp, _dn, fn in os.walk(root, topdown=False):
             pass
 PYEOF
 
-# --- 8c. Sanity on the sourceless tree ---------------------------------
+# --- 7c. Sanity on the sourceless tree ---------------------------------
 "$PY" -I -c "import aiagent, dspy" \
     || { echo "ERROR: sourceless bundle not importable" >&2; exit 1; }
 
-# --- 9. Obtain a static zstd (cached across builds) --------------------
+# --- 8. Obtain a static zstd (cached across builds) --------------------
 if ! "$ZSTD_BIN" --version >/dev/null 2>&1; then
     echo "==> Building static zstd $ZSTD_VERSION (cached at $ZSTD_BIN)"
     ztmp="$(mktemp -d)"
@@ -212,7 +224,7 @@ fi
 cp "$ZSTD_BIN" "$MKDIR/zstd"
 chmod +x "$MKDIR/zstd"
 
-# --- 10. Compress the heavy payload (zstd -19, multithreaded) ----------
+# --- 9. Compress the heavy payload (zstd -19, multithreaded) -----------
 mkdir -p "$STAGE/doc"
 cp -p README.md LICENSE CHANGELOG.md "$STAGE/doc/" 2>/dev/null || true
 echo "==> Compressing payload (zstd -19 -T0)"
@@ -226,7 +238,7 @@ foreign="$("$MKDIR/zstd" -dc "$MKDIR/bundle.tar.zst" | tar --numeric-owner -tvf 
 [ -z "$foreign" ] || { echo "ERROR: payload entries not root-owned or group/other-writable:" >&2
                        printf '%s\n' "$foreign" | sed 5q >&2; exit 1; }
 
-# --- 11. Generate the makeself startup script (baked-in version/py) ----
+# --- 10. Generate the makeself startup script (baked-in version/py) ----
 {
     printf '%s\n' '#!/bin/sh'
     printf 'AIAGENT_VERSION=%s\n' "$VERSION"
@@ -235,7 +247,7 @@ foreign="$("$MKDIR/zstd" -dc "$MKDIR/bundle.tar.zst" | tar --numeric-owner -tvf 
 } > "$MKDIR/startup.sh"
 chmod +x "$MKDIR/startup.sh"
 
-# --- 12. Assemble the self-extracting installer with makeself ----------
+# --- 11. Assemble the self-extracting installer with makeself ----------
 # --nox11: run the startup script inline (no xterm). --nocomp: the payload is
 # already zstd-compressed. --sha256: integrity check on extraction. --header: the
 # /var/tmp-defaulting copy made in step 1. `sh ./startup.sh`, not ./startup.sh:
@@ -251,7 +263,7 @@ rm -rf "$STAGE" "$MKDIR"
 [ "$(grep -m1 -a '^TMPROOT=' "$OUT")" = 'TMPROOT=${TMPDIR:=/var/tmp}' ] \
     || { echo "ERROR: $OUT does not default its extraction dir to /var/tmp" >&2; exit 1; }
 
-# --- 13. Smoke test: install to a temp prefix + run --------------------
+# --- 12. Smoke test: install to a temp prefix + run --------------------
 # Exercises the two failure modes that shipped in v0.1.0:
 #   (a) Typer/Click make_metavar: render usage/help for an ARG-bearing command.
 #   (b) sourceless skill loader: actually load the built-in skill entry .pyc.
@@ -263,7 +275,7 @@ AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 # Version audit: confirm every installed module matches requirements.txt, at both
 # the dist-info metadata AND the imported-code (__version__) level. A build where
 # those disagree — the v0.1.0 defect — fails here instead of shipping. The
-# distributions stripped in 6b/6c are passed as STRIP_ABSENT so their absence is
+# distributions stripped in 5b/5c are passed as STRIP_ABSENT so their absence is
 # expected rather than reported as MISSING.
 echo "==> Verifying bundled module versions against requirements.txt"
 # shellcheck disable=SC2086 # STRIP_ABSENT is an intentional word-split list
@@ -328,7 +340,7 @@ esac
 # except a real script file — exactly the installed `aiagent` console script's
 # situation — so a stdin-heredoc probe asserts here where a file probe does not.
 #
-# The same probe also proves the step-6c AWS strip is safe. litellm imports
+# The same probe also proves the step-5c AWS strip is safe. litellm imports
 # boto3 lazily today, so removing it is invisible — but that is litellm's
 # implementation detail, not a guarantee. Importing litellm here (and the dspy
 # LM stack that sits on it) with boto3 absent is what turns "a future litellm
@@ -360,7 +372,7 @@ rm -f "$PROBE"
 rm -rf "$TPREFIX"
 echo "    ok (--help, version, hermetic, modes, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
 
-# --- 14. Report --------------------------------------------------------
+# --- 13. Report --------------------------------------------------------
 SIZE="$(du -h "$OUT" | cut -f1)"
 echo ""
 echo "Built installer:"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -123,12 +124,22 @@ def test_the_locks_satisfy_what_pyproject_declares(lock: str, requirements: list
 
 BUILD_BINARY = ROOT / "tools" / "package" / "build-binary.sh"
 WHEEL = f"aiagent-{VERSION}-py3-none-any.whl"
+MINOR = ".".join(PINNED_PYTHON.split(".")[:2])
+PIP_CHECK_OK = 'echo "No broken requirements found."'
 
 
-def fake_build_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+def fake_build_project(
+    tmp_path: Path, pip_check: str = PIP_CHECK_OK
+) -> tuple[Path, dict[str, str]]:
     """A project with the real build-binary.sh and just enough around it (the locks, makeself,
-    x86_64), and a fake uv that logs every call to uv.log, builds an empty wheel and cannot
-    install a CPython."""
+    x86_64), and fake tools that log to ``tmp_path``:
+
+    - uv (uv.log) builds an empty wheel and has a fake uv-managed CPython
+    - that CPython's python (python.log) prints its prefix and fakes pip (``pip_check`` is the
+      shell code for ``pip check``; pip is gone once the build strips it); everything else goes
+      to the interpreter running the tests
+    - curl fails, so a build without a cached zstd stops there
+    """
     project = tmp_path / "project"
     (project / "tools" / "package").mkdir(parents=True)
     shutil.copy2(BUILD_BINARY, project / "tools" / "package" / "build-binary.sh")
@@ -136,19 +147,40 @@ def fake_build_project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (project / "pyproject.toml").write_text(f'[project]\nname = "aiagent"\nversion = "{VERSION}"\n')
     (project / "requirements.txt").write_text("dspy==3.2.1\n")
     (project / "requirements-build.txt").write_text("hatchling==1.32.4\n")
+    python = tmp_path / "uv-python" / f"cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
+    write_program(
+        python / "bin" / f"python{MINOR}",
+        f"""echo "$*" >> "{tmp_path / "python.log"}"
+here="$(cd "$(dirname "$0")/.." && pwd)"
+case "$*" in
+    *sys.base_prefix*) echo "$here" ;;
+    "-m pip "*)
+        [ -d "$here/lib/python{MINOR}/site-packages/pip" ] \\
+            || {{ echo "$0: No module named pip" >&2; exit 1; }}
+        case "$*" in
+            "-m pip check") {pip_check} ;;
+            *.whl) printf '#!%s\\nimport aiagent\\n' "$0" > "$here/bin/aiagent" ;;
+        esac ;;
+    *"import aiagent, dspy"*) ;;
+    *) exec "{sys.executable}" "$@" ;;
+esac
+""",
+    )
+    (python / "lib" / f"python{MINOR}" / "site-packages" / "pip").mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     write_program(bin_dir / "uname", "echo x86_64\n")
     write_program(bin_dir / "makeself", "exit 0\n")
     (bin_dir / "makeself-header.sh").write_text("TMPROOT=\\${TMPDIR:=/tmp}\n")
+    write_program(bin_dir / "curl", 'echo "curl: (6) no network in the tests" >&2; exit 6\n')
     write_program(
         bin_dir / "uv",
-        f'''echo "$*" >> "{tmp_path / "uv.log"}"
+        f"""echo "$*" >> "{tmp_path / "uv.log"}"
 case "$1 $2" in
     "build --wheel") while [ $# -gt 1 ]; do [ "$1" != -o ] || : > "$2/{WHEEL}"; shift; done ;;
-    "python install") echo "error: no CPython downloads here" >&2; exit 2 ;;
-    "python find") echo "error: No interpreter found" >&2; exit 2 ;;
+    "python find") echo "{python / "bin" / f"python{MINOR}"}" ;;
+    "python dir") echo "{python.parent}" ;;
 esac
-''',
+""",
     )
     return project, {"PATH": f"{bin_dir}:{SYSTEM_PATH}", "HOME": str(tmp_path / "home")}
 
@@ -157,8 +189,8 @@ def run_build(project: Path, env: dict[str, str]) -> subprocess.CompletedProcess
     return run_script(["bash", str(project / "tools" / "package" / "build-binary.sh")], env)
 
 
-def uv_calls(tmp_path: Path) -> list[list[str]]:
-    log = tmp_path / "uv.log"
+def calls(tmp_path: Path, tool: str) -> list[list[str]]:
+    log = tmp_path / f"{tool}.log"
     return [line.split() for line in log.read_text().splitlines()] if log.exists() else []
 
 
@@ -169,7 +201,7 @@ def test_the_wheel_is_built_by_the_hash_pinned_build_backend(tmp_path: Path) -> 
 
     run_build(project, env)
 
-    (build,) = [call for call in uv_calls(tmp_path) if call[:2] == ["build", "--wheel"]]
+    (build,) = [call for call in calls(tmp_path, "uv") if call[:2] == ["build", "--wheel"]]
     assert build[build.index("--build-constraints") + 1] == str(
         project / "requirements-build.txt"
     )
@@ -184,4 +216,50 @@ def test_the_build_stops_without_the_build_lock(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "requirements-build.txt missing — run 'make lock' first" in result.stderr
-    assert uv_calls(tmp_path) == []
+    assert calls(tmp_path, "uv") == []
+
+
+def test_the_lock_and_the_wheel_install_as_hash_checked_wheels_without_the_resolver(
+    tmp_path: Path,
+) -> None:
+    """Exactly the artifacts pinned in requirements.txt, and nothing pip adds on its own: no
+    unpinned dependency, no sdist (whose build dependencies pip fetches unchecked), no cache."""
+    project, env = fake_build_project(tmp_path)
+
+    run_build(project, env)
+
+    lock, wheel = [call for call in calls(tmp_path, "python") if call[:3] == ["-m", "pip", "install"]]
+    for install in (lock, wheel):
+        assert {"--no-deps", "--no-cache-dir", "--no-compile"} <= set(install)
+        assert install[install.index("--only-binary") + 1] == ":all:"
+        assert "-c" not in install
+    assert lock[-3:] == ["--require-hashes", "-r", str(project / "requirements.txt")]
+    assert wheel[-1] == str(project / "dist" / WHEEL)
+    assert not (project / "dist" / "constraints.txt").exists()
+
+
+def test_the_build_stops_when_pip_check_finds_the_lock_incomplete(tmp_path: Path) -> None:
+    """--no-deps skips pip's resolver: a dependency added to pyproject.toml without `make lock`
+    would be missing from the bundle."""
+    unmet = "aiagent 0.3.1 requires pyyaml, which is not installed."
+    project, env = fake_build_project(tmp_path, pip_check=f'echo "{unmet}"; exit 1')
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines()[-2:] == [
+        "ERROR: requirements.txt is incomplete (pip check):",
+        unmet,
+    ]
+
+
+def test_pip_check_runs_before_the_build_strips_pip_and_the_aws_subtree(tmp_path: Path) -> None:
+    """After the strips, litellm's boto3 and huggingface-hub's hf-xet are unmet by design, and
+    pip itself is gone."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert ["-m", "pip", "check"] in calls(tmp_path, "python")
+    assert "No module named pip" not in result.stderr
+    assert "==> Precompiling all modules" in result.stdout
