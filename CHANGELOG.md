@@ -59,6 +59,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   removed when the build ends; a failed smoke test used to leave ~290 MB in
   `dist/.smoketest`. The smoke test also no longer reads the maintainer's
   `~/.config/aiagent` or `AIAGENT_*` settings, which could change its result.
+- **A module that does not compile fails `make package`.** The precompile step
+  discarded every error, and the sourceless step then deletes all `.py` files, so
+  such a module would have been silently missing from the bundle. (Everything
+  compiles today.)
 - **`make package` rebuilds a cached static zstd that is not the pinned one.** The
   cache was keyed by architecture only and reused whenever `zstd --version` ran,
   so a version bump kept the old binary and a dynamically linked one would have
