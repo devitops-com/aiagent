@@ -39,6 +39,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **An upgrade keeps the working install when the new one cannot run here**
   (musl, a `noexec` prefix): the bundled Python is started once before the old
   tree is replaced, and the installer exits 1 with the reason.
+- **`make release` refuses untracked files that `status.showUntrackedFiles=no`
+  hides, and edits hidden by assume-unchanged / skip-worktree.** The build packs
+  untracked files under `src/` into the wheel, so they would have shipped without
+  being in the tag.
+- **`make release` without a terminal** now says to set
+  `AIAGENT_RELEASE_ASSUME_YES=1` instead of aborting with
+  `/dev/tty: No such device or address`.
 
 ### Security
 - **A root or system install is owned by root and not group-writable.** The
