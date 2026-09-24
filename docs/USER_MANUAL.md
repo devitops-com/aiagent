@@ -678,7 +678,7 @@ aiagent --help
 payload into `DIR`. Use `AIAGENT_PREFIX` or `-- --prefix DIR`.
 
 Build deps: `uv`, `makeself`, `curl`, `readelf` (binutils), and a C toolchain (to build the static zstd
-once; it's cached under `.cache/`). Run `make lock` before `make package`. The
+once; it's cached under `.cache/`, per version). Run `make lock` before `make package`. The
 aiagent wheel is built by the hash-pinned backend of `requirements-build.txt`
 (hatchling, from `pyproject.toml`'s `[build-system]`; `make lock` writes it). The
 dependencies are installed as hash-checked wheels, exactly the pins of

@@ -59,6 +59,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   removed when the build ends; a failed smoke test used to leave ~290 MB in
   `dist/.smoketest`. The smoke test also no longer reads the maintainer's
   `~/.config/aiagent` or `AIAGENT_*` settings, which could change its result.
+- **`make package` rebuilds a cached static zstd that is not the pinned one.** The
+  cache was keyed by architecture only and reused whenever `zstd --version` ran,
+  so a version bump kept the old binary and a dynamically linked one would have
+  shipped. It is now cached per version and reused only while it reports that
+  version and has no program interpreter, and the build report gives the
+  installer's real size (not the disk blocks the filesystem preallocated).
 - **`make release` refuses untracked files that `status.showUntrackedFiles=no`
   hides, and edits hidden by assume-unchanged / skip-worktree.** The build packs
   untracked files under `src/` into the wheel, so they would have shipped without

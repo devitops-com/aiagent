@@ -192,6 +192,7 @@ STARTUP_IN = ROOT / "tools" / "package" / "startup.sh.in"
 WHEEL = f"aiagent-{VERSION}-py3-none-any.whl"
 MINOR = PINNED_PYTHON.rsplit(".", 1)[0]
 PIP_CHECK_OK = 'echo "No broken requirements found."'
+ZSTD_VERSION = "1.5.6"
 UV_CANNOT_DOWNLOAD = f"error: No download found for request: cpython-{PINNED_PYTHON}-linux-x86_64-gnu"
 
 
@@ -206,6 +207,8 @@ def fake_build_project(
     staged_version: str = PINNED_PYTHON,
     uv_python_install: str = "exit 0",
     smoke_version: str = VERSION,
+    zstd_version: str = ZSTD_VERSION,
+    zstd_dynamic: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """A project with the real build-binary.sh and just enough around it (the locks, a cached
     zstd, x86_64), and fake tools that log to ``tmp_path``:
@@ -217,7 +220,8 @@ def fake_build_project(
       pip (``pip_check`` is the shell code for `pip check`; pip is gone once the build strips it);
       everything else goes to the interpreter running the tests
     - curl fails, so a build without a usable cached zstd stops there
-    - the cached zstd stores and cats instead of compressing
+    - the cached zstd reports ``zstd_version`` and stores and cats instead of compressing;
+      readelf (else the real one) sees it as a static ELF, or a dynamic one if ``zstd_dynamic``
     - makeself copies what it packs to ``tmp_path/mkself`` and writes an installer that lays down
       a fake aiagent (its `version` prints ``smoke_version``) and bundled python, which log each
       run and its HOME and AIAGENT_* to smoke.log
@@ -264,14 +268,16 @@ esac
         minimal_elf("libc.so.6")
     )
     write_program(
-        project / ".cache" / "aiagent-build" / "zstd-static-x86_64",
-        """case "$1" in
-    --version) echo "*** Zstandard CLI (64-bit) v1.5.6, by Yann Collet ***" ;;
+        project / ".cache" / "aiagent-build" / f"zstd-{ZSTD_VERSION}-static-x86_64",
+        f"""case "$1" in
+    --version) echo "*** Zstandard CLI (64-bit) v{zstd_version}, by Yann Collet ***" ;;
     -dc) cat "$2" ;;
     *) for out; do :; done; cat > "$out" ;;
 esac
 """,
     )
+    interpreter = "[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]"
+    program_headers = f'echo "      {interpreter}"' if zstd_dynamic else ":"
     smoke_log = tmp_path / "smoke.log"
     logged = f'echo "$0 $* HOME=$HOME $(env | grep ^AIAGENT_ | sort | tr "\\n" " ")" >> "{smoke_log}"'
     fakes = tmp_path / "installed"
@@ -310,6 +316,16 @@ cp "{installer}" "$2"
     )
     (bin_dir / "makeself-header.sh").write_text("TMPROOT=\\${TMPDIR:=/tmp}\n")
     write_program(bin_dir / "curl", 'echo "curl: (6) no network in the tests" >&2; exit 6\n')
+    write_program(
+        bin_dir / "readelf",
+        f"""for file; do :; done
+case "$file" in
+    */.cache/aiagent-build/zstd-*)
+        [ "$1" != -lW ] || {program_headers} ;;
+    *) exec /usr/bin/readelf "$@" ;;
+esac
+""",
+    )
     write_program(
         bin_dir / "uv",
         f"""echo "$*" >> "{tmp_path / "uv.log"}"
@@ -588,3 +604,42 @@ def test_the_build_fails_when_a_staged_elf_needs_libpython(tmp_path: Path) -> No
     assert result.returncode == 1
     staged = project / "dist" / ".build" / "python" / "lib" / f"python{MINOR}" / "lib-dynload"
     assert f"  {staged / '_embed.so'}: libpython{MINOR}.so.1.0" in result.stderr.splitlines()
+
+
+def test_the_build_reuses_the_cached_static_zstd_of_the_pinned_version(tmp_path: Path) -> None:
+    """The cache is versioned (zstd-1.5.6-static-x86_64): a bump never picks up the old binary."""
+    project, env = fake_build_project(tmp_path)
+    (project / ".cache" / "aiagent-build" / "zstd-static-x86_64").write_text("stale\n")
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "Building static zstd" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("version", "dynamic"), [("1.5.5", False), (ZSTD_VERSION, True)], ids=["version", "dynamic"]
+)
+def test_a_cached_zstd_that_is_not_the_pinned_static_one_is_rebuilt(
+    version: str, dynamic: bool, tmp_path: Path
+) -> None:
+    """The installer runs the bundled zstd on hosts without one: it must be the checksummed
+    version and static (no program interpreter)."""
+    project, env = fake_build_project(tmp_path, zstd_version=version, zstd_dynamic=dynamic)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 6
+    assert f"==> Building static zstd {ZSTD_VERSION}" in result.stdout
+    assert "curl: (6) no network in the tests" in result.stderr
+
+
+def test_the_report_gives_the_installers_size_not_its_disk_blocks(tmp_path: Path) -> None:
+    """du without --apparent-size counts the blocks XFS preallocated (127M for a 75 MB file)."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    out = project / "dist" / "aiagent-install.sh"
+    assert f"  {out}  ({out.stat().st_size})" in result.stdout.splitlines()
