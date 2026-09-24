@@ -198,6 +198,7 @@ def fake_build_project(
     pip_check: str = PIP_CHECK_OK,
     staged_version: str = PINNED_PYTHON,
     uv_python_install: str = "exit 0",
+    smoke_version: str = VERSION,
 ) -> tuple[Path, dict[str, str]]:
     """A project with the real build-binary.sh and just enough around it (the locks, a cached
     zstd, x86_64), and fake tools that log to ``tmp_path``:
@@ -210,8 +211,9 @@ def fake_build_project(
     - curl fails, so a build without a usable cached zstd stops there
     - the cached zstd stores and cats instead of compressing
     - makeself copies what it packs to ``tmp_path/mkself`` and writes an installer that lays down
-      a fake aiagent and bundled python, which log each run and its HOME and AIAGENT_* to
-      smoke.log
+      a fake aiagent (its `version` prints ``smoke_version``) and bundled python, which log each
+      run and its HOME and AIAGENT_* to smoke.log
+    - pip and makeself log the TMPDIR they get to tmpdir.log
     """
     project = tmp_path / "project"
     (project / "tools" / "package").mkdir(parents=True)
@@ -230,6 +232,7 @@ case "$*" in
     *sys.base_prefix*) echo "$here" ;;
     *"platform.python_version()"*) echo "{staged_version}" ;;
     "-m pip "*)
+        echo "pip $TMPDIR" >> "{tmp_path / "tmpdir.log"}"
         [ -d "$here/lib/python{MINOR}/site-packages/pip" ] \\
             || {{ echo "$0: No module named pip" >&2; exit 1; }}
         case "$*" in
@@ -252,13 +255,13 @@ esac
 """,
     )
     smoke_log = tmp_path / "smoke.log"
-    logged = f'echo "$(basename "$0") $* HOME=$HOME $(env | grep ^AIAGENT_ | sort)" >> "{smoke_log}"'
+    logged = f'echo "$0 $* HOME=$HOME $(env | grep ^AIAGENT_ | sort | tr "\\n" " ")" >> "{smoke_log}"'
     fakes = tmp_path / "installed"
     write_program(
         fakes / "aiagent",
         f"""{logged}
 case "$1" in
-    version) echo "{VERSION}" ;;
+    version) echo "{smoke_version}" ;;
     run) echo "Usage: aiagent run [OPTIONS] SKILL" ;;
     skills) echo "extract" ;;
 esac
@@ -278,7 +281,8 @@ cp "{fakes / f"python{MINOR}"}" "$AIAGENT_PREFIX/lib/aiagent/bin/"
     write_program(bin_dir / "uname", "echo x86_64\n")
     write_program(
         bin_dir / "makeself",
-        f"""while [ "${{1#--}}" != "$1" ]; do
+        f"""echo "makeself $TMPDIR" >> "{tmp_path / "tmpdir.log"}"
+while [ "${{1#--}}" != "$1" ]; do
     case "$1" in --header|--tar-extra) shift ;; esac
     shift
 done
@@ -470,4 +474,67 @@ def test_the_installer_and_the_smoke_test_use_the_x_y_of_the_pinned_cpython(
     startup = (tmp_path / "mkself" / "startup.sh").read_text().splitlines()
     assert startup[:3] == ["#!/bin/sh", f"AIAGENT_VERSION={VERSION}", f"PYVER={MINOR}"]
     smoke = (tmp_path / "smoke.log").read_text().splitlines()
-    assert any(line.startswith(f"python{MINOR} -I ") for line in smoke)
+    assert any(f"/lib/aiagent/bin/python{MINOR} -I " in line for line in smoke)
+
+
+WORK = re.compile(r"/var/tmp/aiagent-build\.[A-Za-z0-9]{6}")
+
+
+def work_dir(tmp_path: Path) -> Path:
+    """The build's private temp dir, from the TMPDIR (WORK/tmp) that pip and makeself got."""
+    tmpdirs = {line.split()[1] for line in (tmp_path / "tmpdir.log").read_text().splitlines()}
+    (tmpdir,) = tmpdirs
+    assert re.fullmatch(rf"{WORK.pattern}/tmp", tmpdir), tmpdir
+    return Path(tmpdir).parent
+
+
+def test_the_build_keeps_its_temp_files_in_a_private_dir_under_var_tmp(tmp_path: Path) -> None:
+    """Never /tmp (often a small RAM tmpfs): pip unpacks every wheel into TMPDIR, and makeself
+    writes its ~75 MB archive there. The dir is gone when the build ends."""
+    project, env = fake_build_project(tmp_path)
+
+    result = run_build(project, {**env, "TMPDIR": str(tmp_path / "caller-tmp")})
+
+    assert result.returncode == 0, result.stderr
+    programs = {line.split()[0] for line in (tmp_path / "tmpdir.log").read_text().splitlines()}
+    assert programs == {"pip", "makeself"}
+    assert not work_dir(tmp_path).exists()
+
+
+def test_a_failed_smoke_test_leaves_nothing_behind_but_the_build_output(tmp_path: Path) -> None:
+    """The smoke install (~290 MB unpacked), the probe and the hostile-env files live in the
+    private temp dir, so they go with it also when a check fails."""
+    project, env = fake_build_project(tmp_path, smoke_version="0.0.0")
+
+    result = run_build(project, env)
+
+    assert result.returncode == 1
+    assert f"ERROR: 'aiagent version' printed '0.0.0', want '{VERSION}'" in result.stderr
+    assert sorted(p.name for p in (project / "dist").iterdir()) == [WHEEL, "aiagent-install.sh"]
+    assert not work_dir(tmp_path).exists()
+
+
+def test_the_smoke_test_ignores_the_maintainers_aiagent_config_and_settings(
+    tmp_path: Path,
+) -> None:
+    """~/.config/aiagent (config.toml, user skills) and AIAGENT_* would change what the smoke
+    test sees: it runs with HOME in the private temp dir and no AIAGENT_* but the prefix it
+    installs to."""
+    project, env = fake_build_project(tmp_path)
+    config = tmp_path / "home" / ".config" / "aiagent"
+    (config / "skills").mkdir(parents=True)
+    (config / "config.toml").write_text('model = "from-the-maintainers-config"\n')
+    env = {**env, "AIAGENT_MODEL": "from-the-env", "AIAGENT_SKILLS_DIR": str(config / "skills")}
+
+    result = run_build(project, env)
+
+    assert result.returncode == 0, result.stderr
+    work = work_dir(tmp_path)
+    smoke = (tmp_path / "smoke.log").read_text().splitlines()
+    assert len(smoke) >= 9  # verify-versions, --help, version (twice), run/eval --help, ...
+    for line in smoke:
+        program, *_ = line.split()
+        assert program.startswith(f"{work}/prefix/"), line
+        assert line.endswith(f" HOME={work}/home "), line
+    scripts = [line.split()[2] for line in smoke if line.split()[1] == "-I"]
+    assert scripts == [str(project / "tools" / "package" / "verify-versions.py"), f"{work}/probe.py"]

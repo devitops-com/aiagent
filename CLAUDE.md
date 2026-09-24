@@ -182,6 +182,13 @@ noexec `$TMPDIR` works; the extraction dir defaults to `/var/tmp` (patched
 makeself header), never `/tmp`. Smoke test also checks `aiagent version` ==
 pyproject version, with a hostile `PYTHONPATH`/`PYTHONHOME` too, and file modes.
 
+**Build temp files: never `/tmp`.** uv/pip unpacking, makeself's archive, the
+static-zstd build and the smoke install, probe and hostile-env files live in one
+private `/var/tmp/aiagent-build.XXXXXX` (exported as `TMPDIR`), removed on exit, pass
+or fail; `dist/` keeps only the staging trees. The smoke test runs with `HOME` there
+and every `AIAGENT_*` unset, so the maintainer's `~/.config/aiagent` (config.toml,
+user skills) and env cannot change its result.
+
 **Release/distribution.** `make release` (`tools/release/release.sh`) cuts a
 versioned GitHub release: version from pyproject → tag `vX.Y.Z`; guards (on `main`,
 clean tree incl. untracked files and assume-unchanged/skip-worktree entries,

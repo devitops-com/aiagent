@@ -48,6 +48,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **An upgrade keeps the working install when the new one cannot run here**
   (musl, a `noexec` prefix): the bundled Python is started once before the old
   tree is replaced, and the installer exits 1 with the reason.
+- **`make package` keeps its temporary files out of `/tmp` and cleans up after a
+  failure.** pip's unpacking, makeself's ~75 MB archive, the static-zstd build and
+  the smoke-test install now live in one private directory under `/var/tmp`,
+  removed when the build ends; a failed smoke test used to leave ~290 MB in
+  `dist/.smoketest`. The smoke test also no longer reads the maintainer's
+  `~/.config/aiagent` or `AIAGENT_*` settings, which could change its result.
 - **`make release` refuses untracked files that `status.showUntrackedFiles=no`
   hides, and edits hidden by assume-unchanged / skip-worktree.** The build packs
   untracked files under `src/` into the wheel, so they would have shipped without

@@ -14,6 +14,10 @@
 # Build deps: uv, makeself, curl, gcc/make (to build the static zstd once).
 # Run `make lock` first (requirements.txt is installed hash-checked, and
 # requirements-build.txt pins the build backend that builds the aiagent wheel).
+#
+# Never /tmp (often a small RAM tmpfs): uv/pip unpacking, makeself's archive, the
+# static-zstd build and the smoke-test install all live in one private directory
+# under /var/tmp, removed on exit. dist/ holds the staging trees.
 set -euo pipefail
 export PYTHONNOUSERSITE=1   # hermetic build: never satisfy deps from the user site
 
@@ -70,12 +74,17 @@ if grep -qiE '^(torch|nvidia-)' "$REQ"; then
     echo "ERROR: torch/nvidia-* in requirements.txt; aiagent must stay torch-free" >&2; exit 1
 fi
 
+WORK="$(mktemp -d -p /var/tmp aiagent-build.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+export TMPDIR="$WORK/tmp"
+mkdir -p "$TMPDIR"
+
 echo "==> $APP $VERSION -> makeself installer (CPython $PY_VERSION, sourceless, zstd -19)"
 
 # --- 1. Clean ------------------------------------------------------------
 rm -rf "$STAGE" "$MKDIR" build src/*.egg-info
 mkdir -p "$STAGE" "$MKDIR" "$CACHE"
-HEADER="$STAGE/makeself-header.sh"   # beside the payload dirs, not in the payload
+HEADER="$WORK/makeself-header.sh"
 # shellcheck disable=SC2016  # the ${TMPDIR:=...} text is matched and written literally
 sed 's|^TMPROOT=\\${TMPDIR:=/tmp}$|TMPROOT=\\${TMPDIR:=/var/tmp}|' "$MAKESELF_HEADER" > "$HEADER"
 # shellcheck disable=SC2016
@@ -232,7 +241,7 @@ PYEOF
 # --- 8. Obtain a static zstd (cached across builds) --------------------
 if ! "$ZSTD_BIN" --version >/dev/null 2>&1; then
     echo "==> Building static zstd $ZSTD_VERSION (cached at $ZSTD_BIN)"
-    ztmp="$(mktemp -d)"
+    ztmp="$(mktemp -d -p "$WORK")"
     curl -fsSL -o "$ztmp/z.tgz" \
         "https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/zstd-${ZSTD_VERSION}.tar.gz"
     echo "$ZSTD_SHA256  $ztmp/z.tgz" | sha256sum -c - >/dev/null \
@@ -291,9 +300,13 @@ rm -rf "$STAGE" "$MKDIR"
 # Exercises the two failure modes that shipped in v0.1.0:
 #   (a) Typer/Click make_metavar: render usage/help for an ARG-bearing command.
 #   (b) sourceless skill loader: actually load the built-in skill entry .pyc.
-echo "==> Smoke test (install to a temp prefix + run)"
-TPREFIX="$DIST/.smoketest"
-rm -rf "$TPREFIX"
+echo "==> Smoke test (install to a temp prefix under /var/tmp + run)"
+# Not the maintainer's aiagent setup: ~/.config/aiagent (config.toml, user skills)
+# and AIAGENT_* settings would change what the checks below see.
+export HOME="$WORK/home"
+mkdir -p "$HOME"
+unset "${!AIAGENT_@}"
+TPREFIX="$WORK/prefix"
 AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 
 # Version audit: confirm every installed module matches requirements.txt, at both
@@ -304,7 +317,7 @@ AIAGENT_PREFIX="$TPREFIX" sh "$OUT" >/dev/null
 echo "==> Verifying bundled module versions against requirements.txt"
 # shellcheck disable=SC2086 # STRIP_ABSENT is an intentional word-split list
 "$TPREFIX/lib/$APP/bin/python${PY_MINOR}" -I "$ROOT/tools/package/verify-versions.py" "$REQ" $STRIP_ABSENT \
-    || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; rm -rf "$TPREFIX"; exit 1; }
+    || { echo "ERROR: bundled module versions do not match requirements.txt (stale build?)" >&2; exit 1; }
 
 # $PREFIX/bin must contain ONLY `aiagent`. Installers up to 0.3.0 also linked
 # the bundled interpreter here as python$PY_MINOR, which shadowed the host's
@@ -324,8 +337,8 @@ version_out="$("$TPREFIX/bin/$APP" version)"
 
 # Hermetic (-I): a host PYTHONPATH with its own click, a module in the cwd reached
 # through an empty PYTHONPATH entry, and a stray PYTHONHOME must all be ignored.
-HOSTILE="$DIST/.hostile"
-rm -rf "$HOSTILE"; mkdir -p "$HOSTILE/click"
+HOSTILE="$WORK/hostile"
+mkdir -p "$HOSTILE/click"
 echo 'raise ImportError("a host click shadowed the bundled one")' > "$HOSTILE/click/__init__.py"
 echo 'raise ImportError("a module from the cwd was imported")' > "$HOSTILE/typer.py"
 hostile_out="$(cd "$HOSTILE" && PYTHONPATH="$HOSTILE:" PYTHONHOME=/nonexistent \
@@ -333,7 +346,6 @@ hostile_out="$(cd "$HOSTILE" && PYTHONPATH="$HOSTILE:" PYTHONHOME=/nonexistent \
     || { echo "ERROR: '$APP version' fails with PYTHONPATH/PYTHONHOME set: $hostile_out" >&2; exit 1; }
 [ "$hostile_out" = "$VERSION" ] \
     || { echo "ERROR: with PYTHONPATH/PYTHONHOME set '$APP version' printed '$hostile_out'" >&2; exit 1; }
-rm -rf "$HOSTILE"
 
 # Usable by every user, writable only by the installing one.
 bad_modes="$(find "$TPREFIX" ! -type l \( -perm /022 -o ! -perm -004 -o \( -type d ! -perm -005 \) \))"
@@ -369,7 +381,7 @@ esac
 # implementation detail, not a guarantee. Importing litellm here (and the dspy
 # LM stack that sits on it) with boto3 absent is what turns "a future litellm
 # imports boto3 at module scope" from a broken bundle into a failed build.
-PROBE="$DIST/.skill-load-probe.py"
+PROBE="$WORK/probe.py"
 cat > "$PROBE" <<'PYEOF'
 import importlib.util
 
@@ -389,11 +401,9 @@ for name in ("chat", "extract"):
 PYEOF
 if ! "$TPREFIX/lib/$APP/bin/python${PY_MINOR}" -I "$PROBE"; then
     echo "ERROR: bundle probe failed (skill load, litellm import, or AWS strip)" >&2
-    rm -f "$PROBE"; exit 1
+    exit 1
 fi
-rm -f "$PROBE"
 "$TPREFIX/bin/$APP" doctor --offline >/dev/null
-rm -rf "$TPREFIX"
 echo "    ok (--help, version, hermetic, modes, run/eval --help render, skills list -> extract, sourceless skill load, doctor --offline)"
 
 # --- 13. Report --------------------------------------------------------
