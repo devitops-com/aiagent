@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **A prefix too long for a `#!` line is refused on every Linux, non-ASCII ones
+  included.** Where `/bin/sh` is bash (Fedora, RHEL, Arch) under a UTF-8 locale,
+  the check counted characters instead of the kernel's bytes, so such a prefix
+  installed an `aiagent` that could not start. It now counts bytes.
+
 ## [0.4.0] - 2026-09-24
 
 ### Added
