@@ -138,8 +138,11 @@ entrypoint (banner + `exec $SHELL`).
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
 (**linux-x86_64**, ~71 MB): bundled CPython **exactly** `.python-version` (3.14.7;
 X.Y.Z, the single source of truth for the dev venv, CI, the locks'
-`--python-version` and the bundle; `requires-python` keeps the 3.14 floor),
-**sourceless** (`.pyc` only),
+`--python-version` and the bundle; `requires-python` keeps the 3.14 floor), **no
+libpython** (PBS links it statically into `bin/python3.14`; the shared
+`libpython3.14.so*`, `libpython3.so` and `lib/pkgconfig` are for embedding only and
+dropped — `check-python.sh` fails the build if any `libpython*` is left or any ELF
+NEEDs one, `readelf -d`), **sourceless** (`.pyc` only),
 **zstd -19** payload decompressed by a **bundled static zstd** (target needs no
 zstd), SHA256 integrity, `-I` (isolated) launcher — ignores `PYTHONPATH`,
 `PYTHONHOME`, user site and cwd, so a user skill's `<module>:<attr>` metric can't

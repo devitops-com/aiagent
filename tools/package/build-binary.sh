@@ -3,15 +3,18 @@
 # build-binary.sh — produce `dist/aiagent-install.sh`, a self-extracting
 # **makeself** installer carrying a relocatable, sourceless-precompiled CPython
 # (exactly the X.Y.Z in .python-version) with aiagent + every runtime dependency.
+#
+# The interpreter ships without libpython: python-build-standalone links it statically
+# into bin/pythonX.Y, and the shared libpythonX.Y.so (32 MB) is only for embedding.
 # tools/package/check-python.sh fails the build unless the staged interpreter is
-# exactly the pinned version.
+# exactly the pinned version and no libpython, nor any ELF that needs one, is left.
 #
 # The heavy tree is zstd-compressed and decompressed at install time by a BUNDLED
 # static zstd, so target hosts need neither Python nor zstd. `.py` sources are
 # dropped (sourceless `.pyc` only). makeself provides SHA256 integrity. x86-64.
 # The payload is owned by root:root with modes u+rwX,go+rX,go-w.
 #
-# Build deps: uv, makeself, curl, gcc/make (to build the static zstd once).
+# Build deps: uv, makeself, curl, gcc/make (to build the static zstd once), readelf.
 # Run `make lock` first (requirements.txt is installed hash-checked, and
 # requirements-build.txt pins the build backend that builds the aiagent wheel).
 #
@@ -59,6 +62,7 @@ VERSION="$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | cut -d'"' -f2)"
 [ -n "$VERSION" ] || { echo "ERROR: cannot read version from pyproject.toml" >&2; exit 1; }
 
 command -v makeself >/dev/null || { echo "ERROR: makeself not installed (apt-get install makeself)" >&2; exit 1; }
+command -v readelf >/dev/null || { echo "ERROR: readelf not installed (apt-get install binutils)" >&2; exit 1; }
 # makeself's own header extracts to ${TMPDIR:=/tmp}. Build from a copy defaulting to
 # /var/tmp (step 1), so running aiagent-install.sh directly never unpacks into /tmp
 # (often a small RAM tmpfs) either — install.sh already defaults TMPDIR to /var/tmp.
@@ -167,12 +171,14 @@ find "$SP" -name direct_url.json -delete 2>/dev/null || true
 # --- 5b. Strip dead weight ---------------------------------------------
 # Keep numpy / tokenizers / tiktoken — needed for future ML features (RAG).
 [ -d "$SP/torch" ] && { echo "ERROR: torch leaked into the bundle" >&2; exit 1; }
-echo "==> Stripping dead weight (dep CLIs, headers, hf_xet, dep tests)"
+echo "==> Stripping dead weight (dep CLIs, headers, libpython, hf_xet, dep tests)"
 ( cd "$STAGE/python/bin" && for f in *; do
     case "$f" in "python${PY_MINOR}"|python3|python|"${APP}") ;; *) rm -f "$f" ;; esac
   done )
-rm -rf "$STAGE/python/include" "$STAGE/python/share"
-rm -f "$STAGE/python/lib"/libpython*.a
+rm -rf "$STAGE/python/include" "$STAGE/python/share" "$STAGE/python/lib/pkgconfig"
+# libpythonX.Y.so*, libpython3.so and any static libpython: for embedding only. bin/pythonX.Y
+# has libpython linked in statically, and no extension module links against it (gated below).
+rm -f "$STAGE/python/lib"/libpython*
 find "$SP" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
 # hf_xet: HuggingFace Hub Xet download accelerator — aiagent never hits the Hub.
 rm -rf "$SP/hf_xet" "$SP"/hf_xet-*.dist-info 2>/dev/null || true
@@ -198,11 +204,12 @@ for leftover in boto3 botocore jmespath dateutil s3transfer six.py; do
     [ -e "$SP/$leftover" ] && { echo "ERROR: $leftover survived the AWS strip" >&2; exit 1; }
 done
 
-# Exactly the pinned CPython.
+# Exactly the pinned CPython, no libpython left, and no ELF that NEEDs one.
 bash "$CHECK_PYTHON" "$STAGE/python" "$PY_VERSION"
 
 # --- 6. Sanity-check the staged interpreter ----------------------------
-# NB: do NOT `strip` libpython — it corrupts PBS symbol-version tables.
+# NB: do NOT `strip` the PBS ELF files: that corrupted libpython's symbol-version tables, and
+# bin/python carries the same (statically linked) code.
 "$PY" -I -c "import sqlite3, ssl, ctypes" \
     || { echo "ERROR: staged interpreter is not functional" >&2; exit 1; }
 
