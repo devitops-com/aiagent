@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-25
+
 ### Added
 - **System 1 students: `aiagent distill`.** A skill predictor with one text input
   and one closed-set output (`Literal`, `bool` or a bounded `int`) can be distilled
