@@ -131,7 +131,7 @@ The report includes `api_base`, the effective `model` (or default alias), health
 status, the models endpoint status, and the list of advertised model IDs. If the
 router is unreachable it prints a cold-start hint: devai's vLLM/SGLang backends
 are recreated on demand and the first request to a cold backend can take minutes —
-raise `AIAGENT_REQUEST_TIMEOUT` (seconds) if a call appears to hang.
+raise `AIAGENT_REQUEST_TIMEOUT_S` (seconds) if a call appears to hang.
 
 ### `config show` — inspect resolved settings
 

@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Commands that reach the LLM start about 5 s faster in the devai lab.** litellm
+  fetched its model cost map from GitHub on every start. Behind pipelock that timed
+  out before litellm fell back to the copy it ships. aiagent does no cost accounting,
+  so it now uses the shipped copy (`LITELLM_LOCAL_MODEL_COST_MAP=True`, unless you
+  set it yourself).
+- **`aiagent distill train` waits up to 3 minutes for devai to create the job**
+  (instead of 30 s). devai's router drains and evicts the teacher and starts the
+  trainer before it answers that request.
+- **`aiagent doctor`'s cold-start hint names the real setting,
+  `AIAGENT_REQUEST_TIMEOUT_S`.**
+
 ## [0.5.0] - 2026-09-25
 
 ### Added

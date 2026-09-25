@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import pytest
 
+from aiagent.distill import client as client_mod
 from aiagent.distill.client import (
     TERMINAL,
     TIMEOUT_S,
@@ -300,3 +301,17 @@ def test_read_events_from_volume_last_n_skipping_bad_lines(tmp_path: Path) -> No
 
 def test_read_events_from_volume_absent(tmp_path: Path) -> None:
     assert read_events_from_volume(tmp_path, "ftjob-abc123", last=5) == []
+
+
+def test_creating_a_job_waits_for_the_router_swap() -> None:
+    # The router evicts the teacher and starts the trainer inside this POST.
+    calls: list[httpx.Request] = []
+    job_body = {"id": "ftjob-1", "status": "queued", "model": "laya-multilingual"}
+    client = _client(_respond(200, job_body), calls)
+
+    client.create_job(REQUEST)
+    client.get_job("ftjob-1")
+
+    assert calls[0].extensions["timeout"]["read"] == client_mod.CREATE_TIMEOUT_S
+    assert client_mod.CREATE_TIMEOUT_S >= 180
+    assert calls[1].extensions["timeout"]["read"] == client_mod.TIMEOUT_S

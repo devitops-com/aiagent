@@ -19,7 +19,7 @@ _EXIT_CONFIG = 2
 _COLD_START_HINT = (
     "devai's vLLM/SGLang backends (ports 11435/11436) are recreated on demand; "
     "the first request to a cold backend can take many minutes. Raise the timeout "
-    "with AIAGENT_REQUEST_TIMEOUT (seconds) if a call appears to hang."
+    "with AIAGENT_REQUEST_TIMEOUT_S (seconds) if a call appears to hang."
 )
 
 

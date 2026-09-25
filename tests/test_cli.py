@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -138,3 +139,27 @@ def test_usage_error_prints_help_not_traceback(argv: list[str]) -> None:
     assert "Traceback" not in combined, f"usage error dumped a traceback:\n{combined}"
     assert out.returncode == 2, f"expected exit 2, got {out.returncode}:\n{combined}"
     assert "Usage:" in combined, f"help text not printed:\n{combined}"
+
+
+def test_importing_aiagent_selects_litellms_local_cost_map() -> None:
+    # Without it litellm fetches its cost map on every start; behind devai's
+    # pipelock that times out (~5 s per command). An explicit value is kept.
+    code = "import os, aiagent; print(os.environ.get('LITELLM_LOCAL_MODEL_COST_MAP'))"
+    env = {k: v for k, v in os.environ.items() if k != "LITELLM_LOCAL_MODEL_COST_MAP"}
+    unset = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    kept = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**env, "LITELLM_LOCAL_MODEL_COST_MAP": "False"},
+        capture_output=True,
+        text=True,
+    )
+    assert unset.stdout.strip() == "True", unset.stderr
+    assert kept.stdout.strip() == "False", kept.stderr
+
+
+def test_the_cold_start_hint_names_the_real_timeout_setting() -> None:
+    from aiagent.cli import doctor
+    from aiagent.config import Settings
+
+    assert "AIAGENT_REQUEST_TIMEOUT_S" in doctor._COLD_START_HINT
+    assert "request_timeout_s" in Settings.model_fields

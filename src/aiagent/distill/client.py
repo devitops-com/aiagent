@@ -24,6 +24,9 @@ from aiagent.exceptions import DistillError, TrainerAPIError
 from aiagent.system1.contract import safe_id
 
 TIMEOUT_S: Final = 30.0
+# Creating a job makes devai's router drain and evict the teacher and start the
+# trainer inside the POST (drain alone may take 30 s), so it gets longer.
+CREATE_TIMEOUT_S: Final = 180.0
 TERMINAL: Final = frozenset({"succeeded", "failed", "cancelled"})
 
 _JOBS: Final = "/fine_tuning/jobs"
@@ -94,7 +97,8 @@ class TrainerClient:
 
     def create_job(self, request: JobRequest) -> FineTuningJob:
         """Start a fine-tuning job."""
-        return _job(self._request("POST", _JOBS, body=request.to_json()))
+        body = request.to_json()
+        return _job(self._request("POST", _JOBS, body=body, timeout=CREATE_TIMEOUT_S))
 
     def get_job(self, job_id: str) -> FineTuningJob:
         """The job's current state."""
@@ -110,10 +114,22 @@ class TrainerClient:
             )
         return data
 
-    def _request(self, method: str, path: str, *, body: object = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: object = None,
+        timeout: float | None = None,
+    ) -> Any:
         """Send one request; return the parsed JSON of a 2xx, else TrainerAPIError."""
         try:
-            response = self._client.request(method, path, json=body)
+            response = self._client.request(
+                method,
+                path,
+                json=body,
+                timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
+            )
         except httpx.RequestError as exc:
             raise TrainerAPIError(
                 f"cannot reach the trainer API at {self._base}: {exc} "
