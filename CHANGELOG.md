@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-25
+
 ### Added
 - **`aiagent run SKILL --jsonl FILE`: many inputs in one process.** One JSON object
   of inputs per line (`-` reads stdin), one JSON prediction per line in input order,
