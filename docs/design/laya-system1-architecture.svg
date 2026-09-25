@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1398" width="1000" height="1398" role="img" aria-labelledby="title desc">
+<title id="title">laya System 1: architecture and campaign flow</title>
+<desc id="desc">Top to bottom: aiagent labels documents with the 27B teacher, writes a dataset to the shared volume and starts a job on the laya-trainer router backend, which makes the router move the GPU from the teacher to the trainer. The trainer writes the artifact to the volume; aiagent restores the teacher, evaluates, installs on ship, and serves the model on CPU in front of the LLM.</desc>
+<style>
+  .bg{fill:#ffffff} .lane{fill:#f6f8fa;stroke:#d0d7de;stroke-width:1.5}
+  .box{fill:#ffffff;stroke:#8c959f;stroke-width:1.5}
+  .teacher{fill:#ddf4ff;stroke:#0969da;stroke-width:2}
+  .trainer{fill:#dafbe1;stroke:#1a7f37;stroke-width:2}
+  .vol{fill:#fbefff;stroke:#8250df;stroke-width:1.5}
+  .swap{fill:#fff8c5;stroke:#9a6700;stroke-width:2}
+  text{font-family:system-ui,-apple-system,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;fill:#1f2328}
+  .t{font-size:18px} .tb{font-size:19px;font-weight:700} .ts{font-size:18px;fill:#57606a}
+  .tm{font-size:18px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace}
+  .tl{font-size:18px;fill:#57606a;font-style:italic}
+  .h1{font-size:28px;font-weight:700} .h2{font-size:18px;fill:#57606a}
+  .lh{font-size:20px;font-weight:700} .lh2{font-size:18px;fill:#57606a}
+  .arrow{fill:none;stroke:#57606a;stroke-width:2.2}
+  .ro{fill:none;stroke:#57606a;stroke-width:2.2;stroke-dasharray:7 6}
+  .swaparrow{fill:none;stroke:#9a6700;stroke-width:2.6}
+  .head{fill:#57606a} .headswap{fill:#9a6700}
+  .halo{fill:none;stroke:#f6f8fa;stroke-width:10}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117} .lane{fill:#161b22;stroke:#30363d}
+    .box{fill:#0d1117;stroke:#6e7681}
+    .teacher{fill:#0c2d6b;stroke:#4493f8} .trainer{fill:#04260f;stroke:#3fb950}
+    .vol{fill:#271052;stroke:#ab7df8} .swap{fill:#2e2400;stroke:#d29922}
+    text{fill:#e6edf3} .ts,.tl,.h2,.lh2{fill:#9198a1}
+    .arrow,.ro{stroke:#9198a1} .head{fill:#9198a1}
+    .swaparrow{stroke:#d29922} .headswap{fill:#d29922}
+    .halo{stroke:#161b22}
+  }
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker><marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="headswap" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="1000" height="1398"/>
+<text x="20" y="46" class="h1">laya System 1: architecture and campaign flow</text>
+<text x="20" y="78" class="h2">Top to bottom: one training round, then serving. Columns: where each part runs.</text>
+<path class="arrow" d="M20,116 H66" marker-end="url(#a)"/>
+<text x="76" y="122" class="t">request / write</text>
+<path class="ro" d="M226,116 H272" marker-end="url(#a)"/>
+<text x="282" y="122" class="t">read</text>
+<path class="swaparrow" d="M346,116 H392" marker-end="url(#s)"/>
+<text x="402" y="122" class="t">request that makes the router swap the GPU</text>
+<rect class="lane" x="20" y="146" width="388" height="1172" rx="14"/>
+<text x="214.0" y="178" text-anchor="middle" class="lh">devai lab · aiagent</text>
+<text x="214.0" y="204" text-anchor="middle" class="lh2">torch-free · CPU</text>
+<rect class="lane" x="424" y="146" width="244" height="1172" rx="14"/>
+<text x="546.0" y="178" text-anchor="middle" class="lh">shared volume</text>
+<text x="546.0" y="204" text-anchor="middle" class="lh2">/var/cache/devai/laya</text>
+<rect class="lane" x="684" y="146" width="296" height="1172" rx="14"/>
+<text x="832.0" y="178" text-anchor="middle" class="lh">devai-router · GPU</text>
+<text x="832.0" y="204" text-anchor="middle" class="lh2">one backend at a time</text>
+<path class="arrow" d="M478,448 V616" marker-end="url(#a)"/>
+<text x="490" y="600" text-anchor="start" class="tl">trainer import</text>
+<path class="ro" d="M470,899 V1087 H396" marker-end="url(#a)"/>
+<path class="halo" d="M470,536 H486"/>
+<path class="halo" d="M462,962 H478"/>
+<rect class="box" x="34" y="226" width="360" height="126" rx="10"/>
+<text x="50" y="259"><tspan x="50" dy="0" class="tb">Label</tspan><tspan x="50" dy="25" class="t">questions from the skill signature</tspan><tspan x="50" dy="25" class="t">segment docs by student tokens</tspan><tspan x="50" dy="25" class="t">k teacher samples per item</tspan></text>
+<rect class="teacher" x="698" y="226" width="268" height="108" rx="10"/>
+<text x="714" y="259"><tspan x="714" dy="0" class="tb">Teacher on the GPU</tspan><tspan x="714" dy="25" class="tm">vllm-devai :11437</tspan><tspan x="714" dy="25" class="t">Qwen3.8-27B</tspan></text>
+<path class="arrow" d="M394,280 H696" marker-end="url(#a)"/>
+<text x="546.0" y="268" text-anchor="middle" class="tl">chat completions</text>
+<text x="546.0" y="308" text-anchor="middle" class="tl">≤ 4 in flight</text>
+<rect class="box" x="34" y="372" width="360" height="101" rx="10"/>
+<text x="50" y="405"><tspan x="50" dy="0" class="tb">Write the dataset</tspan><tspan x="50" dy="25" class="t">split by document hash</tspan><tspan x="50" dy="25" class="t">validate the contract</tspan></text>
+<rect class="vol" x="438" y="372" width="216" height="76" rx="10"/>
+<text x="454" y="405"><tspan x="454" dy="0" class="tm">inbox/&lt;ds-id&gt;/</tspan><tspan x="454" dy="25" class="ts">lab: read-write</tspan></text>
+<path class="arrow" d="M394,410 H436" marker-end="url(#a)"/>
+<rect class="box" x="34" y="498" width="360" height="76" rx="10"/>
+<text x="50" y="531"><tspan x="50" dy="0" class="tb">Start training</tspan><tspan x="50" dy="25" class="tm">POST /v1/fine_tuning/jobs</tspan></text>
+<rect class="swap" x="698" y="486" width="268" height="101" rx="10"/>
+<text x="714" y="519"><tspan x="714" dy="0" class="tb">GPU swap</tspan><tspan x="714" dy="25" class="t">evict teacher,</tspan><tspan x="714" dy="25" class="t">start laya-trainer</tspan></text>
+<path class="swaparrow" d="M394,536 H696" marker-end="url(#s)"/>
+<text x="546.0" y="524" text-anchor="middle" class="tl">job request</text>
+<rect class="trainer" x="698" y="608" width="268" height="226" rx="10"/>
+<text x="714" y="641"><tspan x="714" dy="0" class="tb">Trainer on the GPU</tspan><tspan x="714" dy="25" class="tm">laya-trainer :11438</tspan><tspan x="714" dy="25" class="t">OpenAI fine-tuning API</tspan><tspan x="714" dy="25" class="t">import + validate</tspan><tspan x="714" dy="25" class="t">train (GPU, bf16)</tspan><tspan x="714" dy="25" class="t">export ONNX, calibrate</tspan><tspan x="714" dy="25" class="t">parity, golden (all CPU)</tspan><tspan x="714" dy="25" class="ts">busy: other ports get 503</tspan></text>
+<rect class="vol" x="438" y="618" width="216" height="76" rx="10"/>
+<text x="454" y="651"><tspan x="454" dy="0" class="tm">datasets/&lt;ds-id&gt;/</tspan><tspan x="454" dy="25" class="ts">immutable</tspan></text>
+<rect class="vol" x="438" y="708" width="216" height="76" rx="10"/>
+<text x="454" y="741"><tspan x="454" dy="0" class="tm">base/</tspan><tspan x="454" dy="25" class="ts">pinned checkpoints</tspan></text>
+<rect class="vol" x="438" y="798" width="216" height="101" rx="10"/>
+<text x="454" y="831"><tspan x="454" dy="0" class="tm">runs/&lt;job&gt;/</tspan><tspan x="454" dy="25" class="ts">artifact + job.json</tspan><tspan x="454" dy="25" class="ts">lab: read-only</tspan></text>
+<path class="ro" d="M654,656 H696" marker-end="url(#a)"/>
+<path class="ro" d="M654,746 H696" marker-end="url(#a)"/>
+<path class="arrow" d="M698,812 H656" marker-end="url(#a)"/>
+<rect class="box" x="34" y="798" width="360" height="76" rx="10"/>
+<text x="50" y="831"><tspan x="50" dy="0" class="tb">Follow the job</tspan><tspan x="50" dy="25" class="t">read job.json on the volume</tspan></text>
+<path class="ro" d="M438,836 H396" marker-end="url(#a)"/>
+<rect class="box" x="34" y="918" width="360" height="101" rx="10"/>
+<text x="50" y="951"><tspan x="50" dy="0" class="tb">Restore the teacher</tspan><tspan x="50" dy="25" class="t">warm-up with the exact</tspan><tspan x="50" dy="25" class="t">labeling model string</tspan></text>
+<rect class="swap" x="698" y="918" width="268" height="101" rx="10"/>
+<text x="714" y="951"><tspan x="714" dy="0" class="tb">GPU swap</tspan><tspan x="714" dy="25" class="t">evict idle trainer,</tspan><tspan x="714" dy="25" class="t">cold-start teacher ≈ 2 min</tspan></text>
+<path class="swaparrow" d="M394,962 H696" marker-end="url(#s)"/>
+<text x="546.0" y="950" text-anchor="middle" class="tl">warm-up request</text>
+<rect class="box" x="34" y="1043" width="360" height="126" rx="10"/>
+<text x="50" y="1076"><tspan x="50" dy="0" class="tb">Evaluate, then install</tspan><tspan x="50" dy="25" class="t">score held-out via ONNX</tspan><tspan x="50" dy="25" class="t">ship → verify + install</tspan><tspan x="50" dy="25" class="t">repair → label more, retrain</tspan></text>
+<rect class="box" x="34" y="1193" width="360" height="101" rx="10"/>
+<text x="50" y="1226"><tspan x="50" dy="0" class="tb">Serve on CPU</tspan><tspan x="50" dy="25" class="t">System1First → ONNX, ~50 ms</tspan><tspan x="50" dy="25" class="t">confident: answer, no LLM call</tspan></text>
+<rect class="teacher" x="698" y="1193" width="268" height="101" rx="10"/>
+<text x="714" y="1226"><tspan x="714" dy="0" class="tb">LLM on the GPU</tspan><tspan x="714" dy="25" class="tm">vllm-devai :11437</tspan><tspan x="714" dy="25" class="t">serves escalations</tspan></text>
+<path class="arrow" d="M394,1243 H696" marker-end="url(#a)"/>
+<text x="546.0" y="1231" text-anchor="middle" class="tl">below τ or error → LLM</text>
+<text x="20" y="1356" class="ts">One training job = one GPU window = 2 swaps</text>
+<text x="20" y="1382" class="ts">at most 3 rounds per campaign · training never needs the teacher</text>
+</svg>

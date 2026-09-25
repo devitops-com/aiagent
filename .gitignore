@@ -23,3 +23,6 @@ compiled/
 
 # Build cache (static zstd, etc.)
 .cache/
+
+# laya System 1 research material: kept locally, not published (it records the build host)
+docs/design/laya-system1/
