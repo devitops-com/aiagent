@@ -1,21 +1,24 @@
 name: Release
 
 # One build definition for both uses:
-#   - pull requests and main: prove the release build works (installer + full smoke test)
-#     before any tag exists;
+#   - pull requests: prove the release build works (installer + full smoke test) before any
+#     tag exists;
 #   - a pushed version tag (tools/release/release.sh pushes it): build, then attest and
 #     publish the GitHub release.
+# Not on pushes to main: a pull request's run already built the commits its fast-forward merge
+# puts there, and the release commit (version bump + CHANGELOG) is built by its tag's run,
+# which alone gates publishing. A commit pushed to main without a pull request is first built
+# by the next pull request or tag.
 # GitHub artifact attestations can only be made inside GitHub Actions, so releases are built
 # here and not on the maintainer's machine.
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
 
 # A tag is built once: a second run for the same tag waits instead of cancelling the first.
-# Runs for a branch or pull request replace their predecessor.
+# Runs for a pull request replace their predecessor.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}

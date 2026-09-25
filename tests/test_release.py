@@ -1,9 +1,10 @@
 """release.sh and release-notes.sh against throwaway git repos, a bare origin and a fake gh.
 
-release.sh only tags: it promotes the CHANGELOG, commits, tags and pushes both atomically. The
-pushed tag triggers .github/workflows/release.yml, which builds, attests and publishes; release.sh
-then just follows that run. Every guard must stop the release before anything is committed,
-tagged or pushed. Everything lives under ``tmp_path``; nothing reaches GitHub.
+release.sh only tags: it promotes the CHANGELOG (and, given a new version, bumps pyproject.toml to
+it), makes one commit, tags it and pushes both atomically. The pushed tag triggers
+.github/workflows/release.yml, which builds, attests and publishes; release.sh then just follows
+that run. Every guard must stop the release before anything is committed, tagged or pushed.
+Everything lives under ``tmp_path``; nothing reaches GitHub.
 """
 
 from __future__ import annotations
@@ -84,16 +85,29 @@ def release_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def make_release_repo(tmp_path: Path, env: dict[str, str], unreleased: str) -> Path:
-    """A repo on main, in sync with a bare 'origin' under tmp_path, carrying the real release
-    scripts and a tools/package/build-binary.sh that only leaves a marker (CI builds now)."""
+def pyproject_toml(version: str) -> str:
+    """Only [project]'s version is the release version (the one the tag check in release.yml
+    reads): another table's `version` key, even an earlier one, is neither read nor bumped."""
+    return (
+        '[tool.example]\nversion = "0.0.0"\n\n'
+        f'[project]\nname = "aiagent"\nversion = "{version}"  # the release version\n'
+        'description = "x"\n\n[tool.other]\nversion = "0.0.1"\n'
+    )
+
+
+def make_release_repo(
+    tmp_path: Path, env: dict[str, str], unreleased: str, version: str = VERSION
+) -> Path:
+    """A repo on main at ``version``, in sync with a bare 'origin' under tmp_path, carrying the
+    real release scripts and a tools/package/build-binary.sh that only leaves a marker (CI
+    builds now)."""
     repo, origin = tmp_path / "repo", tmp_path / "origin.git"
     (repo / "tools" / "release").mkdir(parents=True)
     shutil.copy2(RELEASE_SH, repo / "tools" / "release" / "release.sh")
     shutil.copy2(RELEASE_NOTES_SH, repo / "tools" / "release" / "release-notes.sh")
     shutil.copy2(INSTALL_SH, repo / "install.sh")
     write_program(repo / "tools" / "package" / "build-binary.sh", "touch ../build-ran\n")
-    (repo / "pyproject.toml").write_text(f'[project]\nname = "aiagent"\nversion = "{VERSION}"\n')
+    (repo / "pyproject.toml").write_text(pyproject_toml(version))
     (repo / ".gitignore").write_text("dist/\n")
     (repo / "CHANGELOG.md").write_text(changelog(unreleased))
     run_script(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env)
@@ -112,15 +126,17 @@ def changelog(unreleased: str) -> str:
     )
 
 
-def promoted_changelog(day: str) -> str:
+def promoted_changelog(day: str, version: str = VERSION) -> str:
     return changelog(RELEASED_ENTRY).replace(
-        "## [Unreleased]\n", f"## [Unreleased]\n\n## [{VERSION}] - {day}\n"
+        "## [Unreleased]\n", f"## [Unreleased]\n\n## [{version}] - {day}\n"
     )
 
 
-def run_release(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run_release(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
     return run_script(
-        ["bash", "tools/release/release.sh"], env | {"AIAGENT_RELEASE_ASSUME_YES": "1"}, cwd=repo
+        ["bash", "tools/release/release.sh", *args],
+        env | {"AIAGENT_RELEASE_ASSUME_YES": "1"},
+        cwd=repo,
     )
 
 
@@ -145,14 +161,24 @@ def assert_nothing_committed_or_pushed(repo: Path, tmp_path: Path, env: dict[str
     assert not [call for call in gh_calls(tmp_path) if call.startswith("run ")]
 
 
-def assert_released_at_origin(repo: Path, tmp_path: Path, env: dict[str, str]) -> None:
-    """The release commit and the annotated tag, both on origin, both at HEAD."""
-    assert git(repo, "log", "-1", "--format=%s", env=env) == f"chore: release {TAG}"
-    assert git(repo, "cat-file", "-t", TAG, env=env) == "tag"  # annotated
-    assert git(repo, "tag", "-l", "--format=%(contents:subject)", TAG, env=env) == f"aiagent {TAG}"
+def assert_released_at_origin(
+    repo: Path, tmp_path: Path, env: dict[str, str], tag: str = TAG
+) -> None:
+    """One release commit on top of the last one and the annotated tag, both on origin, both
+    at HEAD."""
+    assert git(repo, "log", "--format=%s", env=env).splitlines() == [
+        f"chore: release {tag}",
+        "initial",
+    ]
+    assert git(repo, "cat-file", "-t", tag, env=env) == "tag"  # annotated
+    assert git(repo, "tag", "-l", "--format=%(contents:subject)", tag, env=env) == f"aiagent {tag}"
     head = git(repo, "rev-parse", "HEAD", env=env)
     origin = tmp_path / "origin.git"
-    assert git(origin, "rev-parse", "main", f"{TAG}^{{commit}}", env=env).split() == [head, head]
+    assert git(origin, "rev-parse", "main", f"{tag}^{{commit}}", env=env).split() == [head, head]
+
+
+def released_files(repo: Path, env: dict[str, str]) -> list[str]:
+    return sorted(git(repo, "show", "--name-only", "--format=", "HEAD", env=env).splitlines())
 
 
 def test_release_refuses_to_run_off_main(tmp_path: Path, release_env: dict[str, str]) -> None:
@@ -304,18 +330,23 @@ def test_release_promotes_unreleased_and_reverts_it_when_the_commit_fails(
     assert_nothing_committed_or_pushed(repo, tmp_path, release_env)
 
 
+@pytest.mark.parametrize("args", [[], [VERSION]], ids=["no-version", "the-current-version"])
 def test_release_commits_tags_and_pushes_without_building_or_publishing(
-    tmp_path: Path, release_env: dict[str, str]
+    args: list[str], tmp_path: Path, release_env: dict[str, str]
 ) -> None:
     """The tag push is the release: CI builds, attests and publishes. release.sh follows the
-    workflow run the tag triggered and prints the release URL."""
+    workflow run the tag triggered and prints the release URL. Given the version pyproject.toml
+    already has, nothing is bumped."""
     repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY)
 
-    result = run_release(repo, release_env)
+    result = run_release(repo, release_env, *args)
 
     assert result.returncode == 0, result.stderr
     assert f"## [{VERSION}] - " in (repo / "CHANGELOG.md").read_text()
     assert_released_at_origin(repo, tmp_path, release_env)
+    assert released_files(repo, release_env) == ["CHANGELOG.md"]
+    assert (repo / "pyproject.toml").read_text() == pyproject_toml(VERSION)
+    assert f"version : {VERSION}\n" in result.stdout
     assert_nothing_built_or_published(tmp_path)
     head = git(repo, "rev-parse", "HEAD", env=release_env)
     (run_list,) = [call for call in gh_calls(tmp_path) if call.startswith("run list")]
@@ -392,6 +423,140 @@ def test_release_pushes_commit_and_tag_atomically(
     assert "gh release create" not in result.stderr
     assert_nothing_built_or_published(tmp_path)
     assert not [call for call in gh_calls(tmp_path) if call.startswith("run ")]
+
+
+# ------------------------------------------------------------ release.sh X.Y.Z: bump and release
+
+CURRENT = "1.9.2"  # pyproject.toml's version before a bump
+
+
+@pytest.mark.parametrize("new", ["1.9.3", "1.9.10", "1.10.0", "2.0.0"])
+def test_release_bumps_the_version_in_the_one_release_commit(
+    new: str, tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    """No separate bump commit (and no separate CI runs for it): the release commit carries the
+    new version and its CHANGELOG section. Versions compare as numbers: 1.9.10 > 1.9.2."""
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY, version=CURRENT)
+    tag = f"v{new}"
+
+    result = run_release(repo, release_env, new)
+
+    assert result.returncode == 0, result.stderr
+    assert f"version : {CURRENT} -> {new}\n" in result.stdout
+    assert_released_at_origin(repo, tmp_path, release_env, tag)
+    assert released_files(repo, release_env) == ["CHANGELOG.md", "pyproject.toml"]
+    assert (repo / "pyproject.toml").read_text() == pyproject_toml(new)
+    day = git(repo, "log", "-1", "--format=%cs", env=release_env)
+    assert (repo / "CHANGELOG.md").read_text() == promoted_changelog(day, new)
+    (run_list,) = [call for call in gh_calls(tmp_path) if call.startswith("run list")]
+    assert f"--branch {tag}" in run_list
+    assert_nothing_built_or_published(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "new",
+    ["", "1.9", "1.9.3.0", "v1.9.3", "1.9.3rc1", "01.9.3", "1.09.3", "1.9.x", " 1.9.3", "1.9.3\n"],
+)
+def test_release_refuses_a_version_that_is_not_x_y_z(
+    new: str, tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY, version=CURRENT)
+
+    result = run_release(repo, release_env, new)
+
+    assert result.returncode == 1
+    assert "is not a version X.Y.Z" in result.stderr
+    assert_nothing_committed_or_pushed(repo, tmp_path, release_env)
+
+
+@pytest.mark.parametrize("new", ["1.9.1", "1.9.0", "1.8.10", "0.10.0"])
+def test_release_refuses_a_version_lower_than_the_current_one(
+    new: str, tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY, version=CURRENT)
+
+    result = run_release(repo, release_env, new)
+
+    assert result.returncode == 1
+    assert f"version {new} is lower than the current version {CURRENT}" in result.stderr
+    assert_nothing_committed_or_pushed(repo, tmp_path, release_env)
+
+
+@pytest.mark.parametrize("where", ["local", "origin", "github"])
+def test_release_refuses_a_new_version_that_is_already_tagged_or_released(
+    where: str, tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY, version=CURRENT)
+    tag = "v1.9.3"
+    if where in ("local", "origin"):
+        git(repo, "tag", tag, env=release_env)
+    if where == "origin":
+        git(repo, "push", "-q", "origin", tag, env=release_env)
+        git(repo, "tag", "-d", tag, env=release_env)
+    env = release_env | ({"FAKE_GH_RELEASE_EXISTS": "1"} if where == "github" else {})
+
+    result = run_release(repo, env, "1.9.3")
+
+    expected = {
+        "local": f"tag {tag} already exists locally",
+        "origin": f"tag {tag} already exists on origin",
+        "github": f"a GitHub release for {tag} already exists",
+    }[where]
+    assert result.returncode == 1
+    assert expected in result.stderr
+    assert git(repo, "log", "--format=%s", env=release_env) == "initial"
+    assert git(repo, "status", "--porcelain", env=release_env) == ""
+    assert_nothing_built_or_published(tmp_path)
+
+
+def test_release_reverts_the_bump_and_the_changelog_when_the_commit_fails(
+    tmp_path: Path, release_env: dict[str, str]
+) -> None:
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY, version=CURRENT)
+    write_program(
+        repo / ".git" / "hooks" / "pre-commit",
+        "cp pyproject.toml ../pyproject-at-commit.toml\nexit 1\n",
+    )
+
+    result = run_release(repo, release_env, "1.9.3")
+
+    assert result.returncode == 1
+    assert (tmp_path / "pyproject-at-commit.toml").read_text() == pyproject_toml("1.9.3")
+    (reverted,) = [line for line in result.stderr.splitlines() if "Reverted" in line]
+    assert "pyproject.toml" in reverted
+    assert "CHANGELOG.md" in reverted
+    assert (repo / "pyproject.toml").read_text() == pyproject_toml(CURRENT)
+    assert (repo / "CHANGELOG.md").read_text() == changelog(RELEASED_ENTRY)
+    assert_nothing_committed_or_pushed(repo, tmp_path, release_env)
+
+
+def test_release_takes_at_most_one_version(tmp_path: Path, release_env: dict[str, str]) -> None:
+    repo = make_release_repo(tmp_path, release_env, RELEASED_ENTRY, version=CURRENT)
+
+    result = run_release(repo, release_env, "1.9.3", "1.9.4")
+
+    assert result.returncode == 2
+    assert "usage: release.sh [X.Y.Z]" in result.stderr
+    assert_nothing_committed_or_pushed(repo, tmp_path, release_env)
+
+
+@pytest.mark.parametrize(
+    ("args", "env", "command"),
+    [
+        ([], {}, "bash tools/release/release.sh"),
+        (["VERSION=1.2.3"], {}, "bash tools/release/release.sh '1.2.3'"),
+        # An exported VERSION (another tool's) is not a request to bump.
+        ([], {"VERSION": "1.2.3"}, "bash tools/release/release.sh"),
+    ],
+    ids=["plain", "command-line", "environment"],
+)
+def test_make_release_passes_only_a_command_line_version_to_release_sh(
+    args: list[str], env: dict[str, str], command: str
+) -> None:
+    result = run_script(["make", "-n", "release", *args], {"PATH": SYSTEM_PATH} | env, ROOT)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [command]
 
 
 # --------------------------------------------------------------------------- release-notes.sh

@@ -78,8 +78,11 @@ package: ## Build the self-contained, precompiled installer -> dist/aiagent-inst
 
 # --- Release ---
 
-release: ## Cut a release: promote CHANGELOG, tag + push; the tag makes CI build, attest and publish it (version from pyproject.toml)
-	@bash tools/release/release.sh
+# VERSION=X.Y.Z sets pyproject.toml's version in the release commit itself (no separate
+# bump commit to push first); without it the current version is released. Only a VERSION
+# given on the make command line counts: an exported one (another tool's) is ignored.
+release: ## Cut a release: promote CHANGELOG, tag + push; the tag makes CI build, attest and publish it (VERSION=X.Y.Z: bump to it in the same commit)
+	@bash tools/release/release.sh$(if $(filter command line,$(origin VERSION)), '$(VERSION)')
 
 # --- Cleanup ---
 

@@ -5,11 +5,13 @@ on:
     - cron: "0 6 * * *"  # daily, 06:00 UTC
   workflow_dispatch:
   # ...and whenever a lock changes, so a pin with a known advisory fails before it merges.
+  # Not on pyproject.toml: a dependency change goes through `make lock` and changes a lock; a
+  # version bump (the release commit) does not.
   pull_request:
-    paths: ["requirements*.txt", "pyproject.toml"]
+    paths: ["requirements*.txt"]
   push:
     branches: [main]
-    paths: ["requirements*.txt", "pyproject.toml"]
+    paths: ["requirements*.txt"]
 
 permissions:
   contents: read

@@ -946,6 +946,24 @@ def test_ci_installs_exactly_the_hash_locked_dev_dependencies(job: str) -> None:
     assert setup["with"]["cache-dependency-path"] == "requirements-dev.txt"
 
 
+def test_ci_cancels_only_superseded_pull_request_runs() -> None:
+    """A new push to a pull request replaces its running CI; pushes to main queue instead, so
+    the release push does not interrupt the run of the merge before it."""
+    ci = workflow("ci.yml")
+
+    assert set(ci["on"]) == {"push", "pull_request", "workflow_dispatch"}
+    assert ci["on"]["push"] == {"branches": ["main"]}
+    assert ci["concurrency"] == {
+        "group": "ci-${{ github.ref }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    }
+    # Queued, not cancelled: a hung main run must not hold later ones for GitHub's 6 h.
+    assert {name: job.get("timeout-minutes") for name, job in ci["jobs"].items()} == {
+        "lint": 20,
+        "test": 20,
+    }
+
+
 def test_make_check_runs_what_the_ci_lint_job_runs() -> None:
     result = run_script(["make", "-n", "check"], {"PATH": SYSTEM_PATH}, ROOT)
 
@@ -956,13 +974,15 @@ def test_make_check_runs_what_the_ci_lint_job_runs() -> None:
 
 
 def test_the_dependency_audit_runs_on_lock_changes_and_audits_every_lock() -> None:
-    """A lock with a known advisory fails before it merges, not at the next daily run."""
+    """A lock with a known advisory fails before it merges, not at the next daily run. Only a
+    lock change starts it: a real dependency change goes through `make lock`, a version bump
+    in pyproject.toml does not."""
     audit = workflow("audit.yml")
     on = audit["on"]
 
-    assert "schedule" in on
+    assert set(on) == {"schedule", "workflow_dispatch", "pull_request", "push"}
     for event in ("pull_request", "push"):
-        assert on[event]["paths"] == ["requirements*.txt", "pyproject.toml"]
+        assert on[event]["paths"] == ["requirements*.txt"]
     assert on["push"]["branches"] == ["main"]
     lines = run_lines(audit["jobs"]["pip-audit"])
     audited = [line.split(" -r ")[1].split()[0] for line in lines if line.startswith("pip-audit ")]
@@ -989,12 +1009,13 @@ def test_the_job_names_stay_what_the_repository_rulesets_require(
     assert {job_id: job["name"] for job_id, job in workflow(name)["jobs"].items()} == jobs
 
 
-def test_the_release_workflow_runs_on_version_tags_and_proves_the_build_on_prs_and_main() -> None:
+def test_the_release_workflow_runs_on_version_tags_and_proves_the_build_on_prs_only() -> None:
+    """Not on pushes to main: a pull request's run already built the commits its fast-forward
+    merge puts there, and the release commit is built by its tag's run."""
     on = workflow("release.yml")["on"]
 
-    assert on["push"]["tags"] == ["v*"]
-    assert on["push"]["branches"] == ["main"]
-    assert "pull_request" in on
+    assert set(on) == {"push", "pull_request"}
+    assert on["push"] == {"tags": ["v*"]}
 
 
 def test_the_release_workflow_builds_a_tag_once() -> None:
@@ -1022,8 +1043,8 @@ def test_only_the_tag_only_publish_job_may_write_sign_and_attest() -> None:
 
 
 def test_the_package_job_builds_the_installer_with_the_full_smoke_test_on_every_run() -> None:
-    """PRs and main prove the release build before any tag exists, with a pinned uv and nothing
-    from another run's cache."""
+    """PRs prove the release build before any tag exists, with a pinned uv and nothing from
+    another run's cache."""
     package = workflow("release.yml")["jobs"]["package"]
     lines = run_lines(package)
 

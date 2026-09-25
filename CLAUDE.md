@@ -111,7 +111,8 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 `requirements.txt`, `requirements-dev.txt` and `requirements-build.txt`; keeps existing pins —
 `LOCK_ARGS='--upgrade-package X'` moves one) · `make package` ·
 `make release` (tag + push; the tag makes CI build, attest and publish it; version from
-pyproject).
+pyproject) · `make release VERSION=X.Y.Z` (the same, bumping pyproject to X.Y.Z in the release
+commit itself: no separate bump commit).
 
 ## Invariants & gotchas (don't break these)
 
@@ -250,16 +251,23 @@ user skills) and env cannot change its result.
 **Release/distribution.** Releases are **built, attested and published by GitHub
 Actions** (`.github/workflows/release.yml`), never on the maintainer's machine:
 artifact attestations can only be made there. `make release`
-(`tools/release/release.sh`) only tags: version from pyproject → tag `vX.Y.Z`; guards
+(`tools/release/release.sh [X.Y.Z]`) only tags: version from pyproject's `[project]` or
+`VERSION=X.Y.Z` (strict digits, no leading zeros; equal to the current = a plain release,
+lower refused, compared as numbers) → tag `vX.Y.Z`; guards, all before anything mutates
 (on `main`, clean tree incl. untracked files and assume-unchanged/skip-worktree
-entries, in-sync, tag/release absent) → promote CHANGELOG `[Unreleased]` (empty
-refused, via `tools/release/release-notes.sh`) → commit `chore: release vX.Y.Z` →
-annotated tag → atomic push. No build, no `gh release create`. It then waits up to
+entries, in-sync, tag/release absent) → with a new version, set it in `pyproject.toml`
+→ promote CHANGELOG `[Unreleased]` (empty refused, via `tools/release/release-notes.sh`)
+→ ONE commit `chore: release vX.Y.Z` (both files) → annotated tag → atomic push. No
+build, no `gh release create`. The Makefile passes `VERSION` only from the make command
+line (an exported `VERSION` is ignored). It then waits up to
 `AIAGENT_RELEASE_WATCH_WAIT` s (default 60) for the tag's `release.yml` run, follows it
 with `gh run watch` and prints the release URL, or the recovery for a failed run (no
 run showing up: it says where to follow it and still succeeds).
-- `release.yml` runs on PRs, pushes to `main` and `v*` tags; a concurrency group per
-  ref builds a tag once. Job `installer + smoke test` (read-only token, every run): on
+- `release.yml` runs on PRs and `v*` tags only, **not** on pushes to `main` (a PR run
+  already built the commits its fast-forward merge puts there; the release commit is
+  built by its tag's run, which alone gates publishing; a commit pushed to `main` without
+  a PR is first built by the next PR or tag); a concurrency group per ref builds a tag
+  once and replaces a superseded PR run. Job `installer + smoke test` (read-only token, every run): on
   a tag, checks it is `v` + pyproject's version; setup-uv pinned (`version`, no cache;
   it must know the pinned CPython), apt makeself, `make package` (full smoke test; no
   dev venv needed), uploads `dist/aiagent-install.sh`. So a PR proves the release build
@@ -275,8 +283,13 @@ run showing up: it says where to follow it and still succeeds).
   checks out with `persist-credentials: false` (a test checks both; no Dependabot:
   bump the pins by hand, resolving the SHA with `gh api`). `ci.yml` installs the
   hash-locked `requirements-dev.txt` + aiagent `--no-deps -e .`, like
-  `make dev-install`. `audit.yml` pip-audits all three locks daily and on every PR or
-  push to `main` that changes a lock or `pyproject.toml`.
+  `make dev-install`; it runs on PRs and pushes to `main`, and its concurrency cancels
+  only superseded PR runs (`cancel-in-progress` = `event_name == 'pull_request'`), so
+  pushes to `main` queue instead of interrupting each other. `audit.yml` pip-audits all
+  three locks daily and on every PR or push to `main` that changes a lock
+  (`requirements*.txt` only: a dependency change goes through `make lock`, a version bump
+  does not). A release is then about 5 runs, none cancelled: PR (CI + Release), merge
+  push (CI), release push (CI + the tag's Release).
 
 `install.sh` is a POSIX
 **bootstrap** — a makeself archive can't be piped to `sh` (it seeks within `$0`),

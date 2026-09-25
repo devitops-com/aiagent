@@ -2,9 +2,12 @@
 #
 # release.sh — cut a release of aiagent: tag it, and let CI build, attest and publish it.
 #
-# Flow: guard the repo state -> promote the CHANGELOG's [Unreleased] section to
-# the current version -> commit "chore: release vX.Y.Z" -> annotated tag -> push
-# commit and tag atomically. Nothing is built here and no release is created here:
+#     bash tools/release/release.sh [X.Y.Z]        (make release [VERSION=X.Y.Z])
+#
+# Flow: guard the repo state -> with X.Y.Z, set pyproject.toml's [project] version
+# to it -> promote the CHANGELOG's [Unreleased] section to the version -> ONE
+# commit "chore: release vX.Y.Z" (both files) -> annotated tag -> push commit and
+# tag atomically. Nothing is built here and no release is created here:
 # the pushed tag triggers .github/workflows/release.yml, which builds the installer
 # from the tag (full smoke test; it bundles the promoted CHANGELOG), attests
 # dist/aiagent-install.sh and install.sh (GitHub artifact attestations can only be
@@ -12,12 +15,16 @@
 # follows that run with `gh run watch` and prints the release URL.
 #
 # The version is read from pyproject.toml (the single source of truth, same as
-# tools/package/build-binary.sh). Release the *current* version; bump the version
-# and fill in CHANGELOG entries before running this.
+# tools/package/build-binary.sh). Without X.Y.Z the current version is released.
+# X.Y.Z (digits, no leading zeros) bumps it in the release commit itself, so no
+# separate bump commit (and no CI runs for one) is needed; it may equal the current
+# version (a plain release) but not be lower (compared as numbers). Fill in the
+# CHANGELOG's [Unreleased] section before running this.
 #
-# Guards (all must pass before anything mutates): on `main`, clean working tree
-# (untracked files and assume-unchanged / skip-worktree entries included),
-# local == origin/main, and neither the tag nor the GitHub release exists yet.
+# Guards (all must pass before anything mutates): X.Y.Z well-formed and not lower,
+# on `main`, clean working tree (untracked files and assume-unchanged /
+# skip-worktree entries included), local == origin/main, neither the tag nor the
+# GitHub release exists yet, and a non-empty [Unreleased] section.
 #
 # Non-interactive use: set AIAGENT_RELEASE_ASSUME_YES=1 to skip the prompt.
 # AIAGENT_RELEASE_WATCH_WAIT: how many seconds to wait for the tag's workflow run
@@ -30,28 +37,62 @@ cd "$ROOT"
 
 BRANCH="main"
 CHANGELOG="CHANGELOG.md"
+PYPROJECT="pyproject.toml"
 WORKFLOW="release.yml"
 WATCH_WAIT="${AIAGENT_RELEASE_WATCH_WAIT:-60}"
 WATCH_POLL=3
 
-# `|| true` keeps a no-match grep (exit 1) from tripping `set -e`/pipefail before
-# the explicit emptiness check below can emit a friendly diagnostic.
-VERSION="$(grep -m1 -E '^version[[:space:]]*=' pyproject.toml | cut -d'"' -f2 || true)"
-[ -n "$VERSION" ] || { echo "ERROR: cannot read version from pyproject.toml" >&2; exit 1; }
+[ $# -le 1 ] || { echo "usage: release.sh [X.Y.Z]" >&2; exit 2; }
+
+# The version is [project]'s (tomllib's ["project"]["version"], what the tag check in
+# release.yml compares the tag with): another table's `version` key is not it. Step 4
+# bumps the same line.
+IN_PROJECT='/^\[/ { in_project = ($0 ~ /^\[project\][[:space:]]*$/) }'
+VERSION_LINE='in_project && /^version[[:space:]]*=/'
+# `|| true` keeps a failed read from tripping `set -e`/pipefail before the explicit
+# emptiness check below can emit a friendly diagnostic.
+CURRENT_VERSION="$(awk "$IN_PROJECT $VERSION_LINE"' { print; exit }' "$PYPROJECT" \
+    | cut -d'"' -f2 || true)"
+[ -n "$CURRENT_VERSION" ] || { echo "ERROR: cannot read version from $PYPROJECT" >&2; exit 1; }
+
+# --- The version to release ---------------------------------------------------
+XYZ='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+# version_lt A B: A < B, both X.Y.Z, compared part by part as numbers (1.9.10 > 1.9.2).
+version_lt() {
+    local -a a b
+    local i
+    IFS=. read -r -a a <<<"$1"
+    IFS=. read -r -a b <<<"$2"
+    for i in 0 1 2; do
+        [ "${a[i]}" -eq "${b[i]}" ] || { [ "${a[i]}" -lt "${b[i]}" ]; return; }
+    done
+    return 1
+}
+VERSION="$CURRENT_VERSION"
+if [ $# -eq 1 ]; then
+    [[ "$1" =~ $XYZ ]] \
+        || { echo "ERROR: '$1' is not a version X.Y.Z (digits, no leading zeros)" >&2; exit 1; }
+    [[ "$CURRENT_VERSION" =~ $XYZ ]] \
+        || { echo "ERROR: the current version $CURRENT_VERSION ($PYPROJECT) is not X.Y.Z" >&2; exit 1; }
+    if version_lt "$1" "$CURRENT_VERSION"; then
+        echo "ERROR: version $1 is lower than the current version $CURRENT_VERSION" >&2; exit 1
+    fi
+    VERSION="$1"
+fi
 TAG="v$VERSION"
 
 # --- cleanup / abort safety --------------------------------------------------
 # Before the release commit lands, any failure should leave the tree pristine:
-# revert the CHANGELOG promotion and remove the awk-rewrite temp file.
-CHANGELOG_PROMOTED=0
+# revert the version bump and the CHANGELOG promotion, remove the awk-rewrite temp files.
+PREPARED=()  # the files the release commit is to carry, once rewritten
 COMMITTED=0
 cleanup() {
-    rm -f "$CHANGELOG.tmp"
-    if [ "$CHANGELOG_PROMOTED" = "1" ] && [ "$COMMITTED" != "1" ]; then
-        # Restore from HEAD (not the index) so the promotion is reverted even
-        # after it was `git add`ed; `git checkout HEAD --` also unstages it.
-        git checkout HEAD -- "$CHANGELOG" 2>/dev/null || true
-        echo "==> Reverted $CHANGELOG (release aborted before commit)" >&2
+    rm -f "$CHANGELOG.tmp" "$PYPROJECT.tmp"
+    if [ "${#PREPARED[@]}" -gt 0 ] && [ "$COMMITTED" != "1" ]; then
+        # Restore from HEAD (not the index) so the rewrites are reverted even
+        # after they were `git add`ed; `git checkout HEAD --` also unstages them.
+        git checkout HEAD -- "${PREPARED[@]}" 2>/dev/null || true
+        echo "==> Reverted ${PREPARED[*]} (release aborted before commit)" >&2
     fi
     return 0
 }
@@ -105,15 +146,22 @@ bash tools/release/release-notes.sh Unreleased "$CHANGELOG" >/dev/null \
 
 # --- 3. Confirm --------------------------------------------------------------
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '?')"
+if [ "$VERSION" = "$CURRENT_VERSION" ]; then
+    VERSION_SHOWN="$VERSION"
+    BUMPS=""
+else
+    VERSION_SHOWN="$CURRENT_VERSION -> $VERSION"
+    BUMPS="sets $PYPROJECT's version, "
+fi
 cat <<EOF
 
 About to release:
   repo    : $REPO
-  version : $VERSION
+  version : $VERSION_SHOWN
   tag     : $TAG
   branch  : $BRANCH  ($(git rev-parse --short HEAD))
 
-This promotes the CHANGELOG, commits, tags and pushes. The pushed tag starts the
+This ${BUMPS}promotes the CHANGELOG, commits, tags and pushes. The pushed tag starts the
 $WORKFLOW workflow, which builds, attests and publishes the GitHub release.
 It is outward-facing and hard to undo.
 EOF
@@ -134,7 +182,20 @@ if [ "${AIAGENT_RELEASE_ASSUME_YES:-0}" != "1" ]; then
     esac
 fi
 
-# --- 4. Promote the CHANGELOG ------------------------------------------------
+# --- 4. Bump the version, promote the CHANGELOG -------------------------------
+# The [project] version line read above, only its first one: sub() swaps the quoted
+# value alone, so the line keeps its spacing and any comment.
+if [ "$VERSION" != "$CURRENT_VERSION" ]; then
+    awk -v ver="$VERSION" "$IN_PROJECT $VERSION_LINE"' && !done {
+            sub(/"[^"]*"/, "\"" ver "\""); done = 1
+        }
+        { print }
+    ' "$PYPROJECT" > "$PYPROJECT.tmp"
+    mv "$PYPROJECT.tmp" "$PYPROJECT"
+    PREPARED+=("$PYPROJECT")
+    echo "==> Bumped $PYPROJECT: $CURRENT_VERSION -> $VERSION"
+fi
+
 # Keep a fresh empty '## [Unreleased]', move its content under '## [VERSION] - DATE'.
 RELEASE_DATE="$(date +%F)"
 awk -v ver="$VERSION" -v date="$RELEASE_DATE" '
@@ -145,13 +206,13 @@ awk -v ver="$VERSION" -v date="$RELEASE_DATE" '
     { print }
 ' "$CHANGELOG" > "$CHANGELOG.tmp"
 mv "$CHANGELOG.tmp" "$CHANGELOG"
-CHANGELOG_PROMOTED=1
+PREPARED+=("$CHANGELOG")
 echo "==> Promoted $CHANGELOG: [Unreleased] -> [$VERSION] - $RELEASE_DATE"
 
 # --- 5. Commit + annotated tag (local only) ----------------------------------
 # Nothing is on the remote yet: the recovery for a failure here is to undo the
-# local commit (which also restores the promoted CHANGELOG) and start over.
-git add "$CHANGELOG"
+# local commit (which also restores the promoted CHANGELOG and the version) and start over.
+git add "${PREPARED[@]}"
 git commit -m "chore: release $TAG" >/dev/null
 COMMITTED=1
 if ! git tag -a "$TAG" -m "aiagent $TAG"; then

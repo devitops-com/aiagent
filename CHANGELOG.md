@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **A release starts about half as many GitHub Actions runs, and none are cancelled
+  midway.** The release workflow runs on pull requests and version tags only, no
+  longer on pushes to `main`: a pull request's run builds its commits before they
+  merge, and the tag's own run builds exactly what is released (a commit pushed to
+  `main` without a pull request is first built by the next pull request or tag).
+  CI cancels a running check only when a pull request gets a newer push; pushes to
+  `main` wait for each other. The dependency audit runs on lock changes, no longer on
+  every `pyproject.toml` change such as a version bump.
+- **`make release VERSION=X.Y.Z` bumps the version in the release commit itself.**
+  No separate version-bump commit (with its own CI runs) has to be pushed first. The
+  version must be X.Y.Z in digits and not lower than the current one; without
+  `VERSION`, `make release` releases the current version as before.
+
 ## [0.5.2] - 2026-09-25
 
 ### Fixed

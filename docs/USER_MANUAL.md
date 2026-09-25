@@ -792,6 +792,7 @@ make lock            # regenerate requirements*.txt (needed before `make package
 make lock LOCK_ARGS='--upgrade-package anyio'   # also move one locked package
 make package         # build dist/aiagent-install.sh
 make release         # tag + push; CI builds, attests and publishes the release
+make release VERSION=0.6.0   # the same, with the version bump in the release commit
 ```
 
 Requires `uv`, which also installs Python 3.14.7, the exact version in
@@ -882,7 +883,11 @@ Releases are built, attested and published by GitHub Actions
 there. Maintainers start one with `make release` (`tools/release/release.sh`). It
 reads the version from `pyproject.toml`, promotes the `CHANGELOG.md` `[Unreleased]`
 section to that version, commits `chore: release vX.Y.Z`, tags `vX.Y.Z` and pushes
-the commit and the tag together. It builds nothing and publishes nothing itself.
+the commit and the tag together. `make release VERSION=X.Y.Z` also sets the version in
+`pyproject.toml` to X.Y.Z, in the same single commit, so no separate version-bump
+commit has to be pushed first. X.Y.Z must be digits only (no leading zeros) and not
+lower than the current version (equal is a plain release); only a `VERSION` given on
+the `make` command line counts. It builds nothing and publishes nothing itself.
 
 The pushed tag starts the release workflow. It checks that the tag matches the
 version in `pyproject.toml`, builds the installer with `make package` (with the full
@@ -893,21 +898,26 @@ version's CHANGELOG section as notes. `make release` follows that run
 (`gh run watch`) and prints the release URL or, if the run fails, how to recover;
 `AIAGENT_RELEASE_WATCH_WAIT` sets how many seconds it waits for the run to appear
 (default 60). The same workflow builds the installer (without attesting or
-publishing) for every pull request and every push to `main`, so a release build is
-proven before any tag exists; only its tag-only publish job may write to the
-repository or sign. Verify a release with
+publishing) for every pull request, so a release build is proven before any tag
+exists. It does not run for pushes to `main`: a pull request's run builds its
+commits before they merge, and the tag's run builds exactly what is released (a
+commit pushed to `main` without a pull request is first built by the next pull
+request or tag). Only its tag-only publish job may write to the repository or sign.
+Verify a release with
 `gh attestation verify aiagent-install.sh --repo devitops-com/aiagent`, or let
 `install.sh` do it before it runs the installer: `curl … | AIAGENT_VERIFY=1 sh`
 (see [Verify the download](../README.md#verify-the-download)).
 
-Before releasing: bump `version` in `pyproject.toml`, add entries under
-`## [Unreleased]` (an empty section is refused), and run `make lock` if
-dependencies changed. Pre-flight guards require a clean tree on `main` (untracked
+Before releasing: add entries under `## [Unreleased]` (an empty section is refused),
+run `make lock` if dependencies changed, and pass the new version as
+`make release VERSION=X.Y.Z` (or bump `version` in `pyproject.toml` beforehand). Pre-flight guards require a clean tree on `main` (untracked
 files and assume-unchanged / skip-worktree entries included), in sync with
 `origin`, with the tag and release not yet present. For non-interactive runs, set
 `AIAGENT_RELEASE_ASSUME_YES=1` to skip the prompt. The dependency audit
-(`pip-audit` of all three locks) runs daily and on every change to a lock; check
-that its last run is green before releasing.
+(`pip-audit` of all three locks) runs daily and on every change to a lock (not on a
+`pyproject.toml` change alone); check that its last run is green before releasing.
+CI cancels a running check only when a pull request gets a newer push; pushes to
+`main` wait for each other.
 
 ---
 
