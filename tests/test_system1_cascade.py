@@ -8,9 +8,12 @@ so ``lm.history == []`` proves the student answered.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -473,3 +476,89 @@ def test_run_in_gate_mode_answers_without_the_llm(
     assert result.exit_code == 0, result.output
     assert f"polarity: {student_key(runtime)}" in result.stdout
     assert lm.history == []
+
+
+def test_the_student_loads_once_across_threads(
+    skill: Skill, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `run --jsonl` calls one wrapper from several threads at once.
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, skill, tau=0.0)
+    loads: list[Path] = []
+
+    def slow_counting(path: Path) -> System1Runtime:
+        loads.append(path)
+        time.sleep(0.05)  # a real load takes ~0.85 s: every thread arrives before it ends
+        return System1Runtime(path)
+
+    wrapper = System1First(
+        dspy.Predict(Polarity),
+        derivation=derive(Polarity),
+        installed=installed,
+        mode="gate",
+        min_conf=None,
+        shadow_log=None,
+        runtime_factory=slow_counting,
+    )
+    with dspy.context(lm=DummyLM([])), ThreadPoolExecutor(max_workers=8) as pool:
+        # dspy keeps context overrides in contextvars: copy them per task, as run does.
+        futures = [
+            pool.submit(contextvars.copy_context().run, lambda: wrapper(text=TEXT).polarity)
+            for _ in range(8)
+        ]
+        answers = [future.result() for future in futures]
+    assert loads == [installed.path]
+    assert len(set(answers)) == 1
+
+
+def test_shadow_logs_one_whole_line_per_call_across_threads(
+    skill: Skill, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = settings_for(monkeypatch, "shadow")
+    install(settings, skill, tau=0.0)
+    module = build_module(skill)
+    apply_system1(module, skill, settings)
+    lm = DummyLM([{"polarity": "negative"} for _ in range(32)])
+    with dspy.context(lm=lm), ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(contextvars.copy_context().run, lambda: module(text=TEXT))
+            for _ in range(32)
+        ]
+        for future in futures:
+            future.result()
+    lines = shadow_lines(settings)
+    assert len(lines) == 32
+    assert all(line["llm"] == {"polarity": "negative"} for line in lines)
+
+
+def test_a_failing_student_load_is_tried_and_warned_about_once_across_threads(
+    skill: Skill, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, skill, tau=0.0)
+    loads: list[Path] = []
+
+    def slow_failing(path: Path) -> System1Runtime:
+        loads.append(path)
+        time.sleep(0.05)
+        raise OSError("disk gone")
+
+    wrapper = System1First(
+        dspy.Predict(Polarity),
+        derivation=derive(Polarity),
+        installed=installed,
+        mode="gate",
+        min_conf=None,
+        shadow_log=None,
+        runtime_factory=slow_failing,
+    )
+    lm = DummyLM([{"polarity": "negative"} for _ in range(8)])
+    with dspy.context(lm=lm), ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [
+            pool.submit(contextvars.copy_context().run, lambda: wrapper(text=TEXT).polarity)
+            for _ in range(8)
+        ]
+        answers = [future.result() for future in futures]
+    assert loads == [installed.path]
+    assert len(cascade_warnings(caplog)) == 1
+    assert answers == ["negative"] * 8

@@ -171,10 +171,10 @@ aiagent skills list --json
 | `--source <all\|builtin\|user>` | Filter by skill source (default `all`). |
 | `--json` | Emit JSON, including any skipped-manifest errors. |
 
-### `run` — run a skill once
+### `run` — run a skill
 
-Runs a skill a single time on one input and prints its prediction. Requires a
-reachable router.
+Runs a skill on one input and prints its prediction, or on many inputs with
+`--jsonl`. Requires a reachable router.
 
 ```bash
 aiagent run extract --text "Lunch at Chipotle $12.50 on 3/4/2025"
@@ -182,6 +182,8 @@ aiagent run extract --input inputs.json          # JSON object of named inputs
 aiagent run extract --text "..." --json          # JSON prediction
 aiagent run "extract expense fields" --route     # treat SKILL as free text
 aiagent run extract --text "..." --model default -v
+aiagent run polarity --jsonl texts.jsonl         # one JSON object per line, many inputs
+cat texts.jsonl | aiagent run polarity --jsonl - # the same, from stdin
 ```
 
 | Option | Description |
@@ -191,9 +193,11 @@ aiagent run extract --text "..." --model default -v
 | `--model <alias\|name>` | Override the model for this run. |
 | `--route` | Treat the positional argument as free text and route it to a skill. |
 | `--json` | Emit the prediction as JSON. |
+| `--jsonl <path\|->` | Many inputs: one JSON object of named inputs per line (`-` reads stdin; blank lines are skipped). Prints one JSON prediction per line, **in input order**. A row that fails prints `{"error": "..."}` in its place, the rest still run, and the command exits 1. Bad lines (and input that is not UTF-8) are refused before any LLM call. Cannot be combined with `--text`/`--input`. Ctrl-C drops the inputs not yet started but waits for those already in flight. |
+| `--concurrency <n>` | With `--jsonl`: inputs in flight at once (default 4, the devai teacher's limit; 1-16). |
 | `-v` / `-vv` / `-vvv` | Increase verbosity (see [Verbosity](#verbosity--v---vv---vvv)). |
 
-Provide exactly one of `--text` or `--input`. With `--route`, the positional
+Provide exactly one of `--text`, `--input` or `--jsonl`. With `--route`, the positional
 argument is matched against skills by exact name first, then by keyword overlap
 over each skill's name + description (see [routing](#routing)).
 
@@ -381,7 +385,10 @@ Under `artifacts_dir` (default `~/.local/share/aiagent/artifacts`; a student is 
 `install.json`), `current.json` naming it, and the shadow log `shadow.jsonl`.
 
 **Serving: off → shadow → gate.** Installing does not switch anything on.
-`system1_mode` does, per skill, and only for `aiagent run`:
+`system1_mode` does, per skill, and only for `aiagent run`. Use `run --jsonl` for
+more than a handful of inputs: one process loads the student once (about 0.85 s)
+and then answers each input in about 50 ms, while one-shot `run` calls pay that load
+every time, which is slower than a warm LLM call:
 
 ```bash
 AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}' aiagent run polarity --text "…"

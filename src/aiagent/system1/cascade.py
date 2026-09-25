@@ -17,6 +17,7 @@ from ``aiagent run``'s handler: ``optimize``/``eval`` never see a wrapped module
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -48,6 +49,10 @@ logger = logging.getLogger(__name__)
 REASONING_MARKER: Final = "[system1]"
 
 _DECIMALS: Final = 4
+# `aiagent run --jsonl` calls one wrapper from several threads: load the student
+# once, and never interleave two shadow lines.
+_LOAD_LOCK: Final = threading.Lock()
+_LOG_LOCK: Final = threading.Lock()
 
 Mode = Literal["shadow", "gate"]
 
@@ -117,7 +122,15 @@ class System1First(dspy.Module):  # type: ignore[misc]  # dspy ships no stubs
         """The student's answers; None if the state does not fit or it failed."""
         try:
             if self._runtime is None:
-                self._runtime = self._runtime_factory(self.installed.path)
+                with _LOAD_LOCK:  # several `run --jsonl` threads may get here first
+                    if self._broken:
+                        return None  # another thread's load failed: warned once
+                    if self._runtime is None:
+                        try:
+                            self._runtime = self._runtime_factory(self.installed.path)
+                        except Exception:
+                            self._broken = True  # before the next waiter gets the lock
+                            raise
             if not self._runtime.fits(state, self._questions):
                 return None  # it only ever trained on states it sees whole
             answers = self._runtime.predict(state, self._questions)
@@ -173,7 +186,7 @@ class System1First(dspy.Module):  # type: ignore[misc]  # dspy ships no stubs
         }
         try:
             line = canonical_json(record) + "\n"
-            with self.shadow_log.open("a", encoding="utf-8") as fh:
+            with _LOG_LOCK, self.shadow_log.open("a", encoding="utf-8") as fh:
                 fh.write(line)
         except (OSError, ValueError) as exc:
             logger.warning(

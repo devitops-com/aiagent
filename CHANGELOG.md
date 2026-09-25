@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`aiagent run SKILL --jsonl FILE`: many inputs in one process.** One JSON object
+  of inputs per line (`-` reads stdin), one JSON prediction per line in input order,
+  `--concurrency` inputs in flight (default 4, the devai teacher's limit). A failed
+  row prints `{"error": ...}` in its place and the rest still run; bad lines are
+  refused before any LLM call. With a System 1 student the student loads once per
+  batch instead of once per call, which is where it pays: about 50 ms per input
+  after a one-time load of about 0.85 s.
+
 ### Fixed
 - **Commands that reach the LLM start about 5 s faster in the devai lab.** litellm
   fetched its model cost map from GitHub on every start. Behind pipelock that timed
