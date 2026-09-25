@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-25
+
 ### Fixed
 - **Shadow-log lines can be matched to their inputs again.** A `run --jsonl` batch
   writes `shadow.jsonl` in completion order, so a line could not be told apart from
