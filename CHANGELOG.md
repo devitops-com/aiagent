@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Shadow-log lines can be matched to their inputs again.** A `run --jsonl` batch
+  writes `shadow.jsonl` in completion order, so a line could not be told apart from
+  its neighbours. Each line now carries `input_sha256`, the sha256 of the input text
+  (`printf %s "$text" | sha256sum`); the text itself is still never logged.
+
 ## [0.5.1] - 2026-09-25
 
 ### Added

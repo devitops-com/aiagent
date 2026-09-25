@@ -41,7 +41,7 @@ from aiagent.system1.artifacts import (
     artifact_home,
     load_installed,
 )
-from aiagent.system1.contract import canonical_json
+from aiagent.system1.contract import bytes_sha256, canonical_json
 from aiagent.system1.runtime import Answer, System1Runtime
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class System1First(dspy.Module):  # type: ignore[misc]  # dspy ships no stubs
             return self.predictor(**kwargs)
         prediction = self.predictor(**kwargs)
         if student is not None:
-            self._log_shadow(student, prediction, student_ms)
+            self._log_shadow(student, prediction, student_ms, state)
         return prediction
 
     def _student(self, state: dict[str, str]) -> _Student | None:
@@ -164,7 +164,13 @@ class System1First(dspy.Module):  # type: ignore[misc]  # dspy ships no stubs
         )
         return dspy.Prediction(**values, **reasoning)
 
-    def _log_shadow(self, student: _Student, llm: Any, student_ms: int) -> None:
+    def _log_shadow(
+        self,
+        student: _Student,
+        llm: Any,
+        student_ms: int,
+        state: Mapping[str, str],
+    ) -> None:
         """Append one shadow.jsonl line; a failure only warns."""
         if self.shadow_log is None:
             return
@@ -174,6 +180,9 @@ class System1First(dspy.Module):  # type: ignore[misc]  # dspy ships no stubs
         record = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "artifact_id": self.installed.artifact_id,
+            # `run --jsonl` logs in completion order: this matches a line to its input
+            # (sha256 of the input text) without logging the text.
+            "input_sha256": bytes_sha256(next(iter(state.values())).encode("utf-8")),
             "student": keys,
             "llm": llm_keys,
             "confidence": {

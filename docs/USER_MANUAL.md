@@ -402,10 +402,12 @@ polarity = "shadow"   # off (default) | shadow | gate
 ```
 
 - **shadow**: the LLM answers as before; the student answers too, and one line per
-  call goes to `shadow.jsonl`: the time, the artifact id, the student's and the
-  LLM's answers, the student's confidence, whether the gate would have accepted it,
-  whether they agree, and `student_ms`. No input text is logged. Run shadow first,
-  on real traffic, and read the log.
+  call goes to `shadow.jsonl`: the time, the artifact id, `input_sha256` (the
+  sha256 of the input text, e.g. `printf %s "$text" | sha256sum`; a `--jsonl` batch
+  logs in completion order, so this is how a line is matched to its input), the
+  student's and the LLM's answers, the student's confidence, whether the gate would
+  have accepted it, whether they agree, and `student_ms`. No input text is logged.
+  Run shadow first, on real traffic, and read the log.
 - **gate**: the student answers when every question's confidence is at least τ
   (from the install, or `system1_min_conf` for all questions); otherwise the LLM
   does. A `ChainOfThought` predictor answered by the student gets the reasoning

@@ -9,6 +9,7 @@ so ``lm.history == []`` proves the student answered.
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -241,9 +242,12 @@ def test_shadow_returns_the_llm_answer_and_logs_the_student(
     assert prediction.polarity == "negative"
     [line] = shadow_lines(settings)
     assert list(line) == [
-        "ts", "artifact_id", "student", "llm", "confidence", "would_accept", "agree",
-        "student_ms",
+        "ts", "artifact_id", "input_sha256", "student", "llm", "confidence",
+        "would_accept", "agree", "student_ms",
     ]
+    # Rows of a `run --jsonl` batch log in completion order: the hash of the input
+    # text lets them be matched back to their inputs without logging any text.
+    assert line["input_sha256"] == hashlib.sha256(TEXT.encode("utf-8")).hexdigest()
     key = student_key(runtime)
     assert line["artifact_id"] == installed.artifact_id
     assert line["student"] == {"polarity": key}
@@ -562,3 +566,23 @@ def test_a_failing_student_load_is_tried_and_warned_about_once_across_threads(
     assert loads == [installed.path]
     assert len(cascade_warnings(caplog)) == 1
     assert answers == ["negative"] * 8
+
+
+def test_batch_shadow_lines_match_their_inputs_by_hash(
+    skill: Skill, runtime: System1Runtime, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = settings_for(monkeypatch, "shadow")
+    install(settings, skill, tau=0.0)
+    texts = [f"{TEXT} ({i})" for i in range(12)]
+    inputs = tmp_path / "inputs.jsonl"
+    inputs.write_text("".join(json.dumps({"text": t}) + "\n" for t in texts), encoding="utf-8")
+
+    def fake(_settings: object, _model: object) -> None:
+        dspy.configure(lm=DummyLM([{"polarity": "mixed"} for _ in range(12)]))
+
+    monkeypatch.setattr("aiagent.cli.run.configure_lm", fake)
+    result = runner.invoke(app, ["run", "polarity", "--jsonl", str(inputs), "--concurrency", "4"])
+
+    assert result.exit_code == 0, result.output
+    by_hash = {line["input_sha256"]: line for line in shadow_lines(settings)}
+    assert set(by_hash) == {hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts}
