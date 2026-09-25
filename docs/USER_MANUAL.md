@@ -296,6 +296,8 @@ runs in-process on onnxruntime (CPU) and answers first when it is sure, handing
 the call to the LLM when it is not. The LLM (the skill's own predictor) is the
 teacher: it labels real documents, devai's trainer fine-tunes the student on those
 labels, and aiagent certifies the student on held-out rows before it may answer.
+devai's side (the trainer backend, its API and the file contract) is described in
+[devai's `docs/laya-trainer.md`](https://github.com/ksparavec/devai/blob/main/docs/laya-trainer.md).
 
 A predictor qualifies when it has exactly **one `str` input** and exactly **one
 output** besides `reasoning` with a closed answer set: `Literal[...]` of 2-10
