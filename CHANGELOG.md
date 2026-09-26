@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-26
+
 ### Changed
 - **`sentiment` scores differ from 0.5.x.** Every LLM score is now a sample at
   temperature 0.7: sample *j* of a segment is a call with DSPy rollout id *j*
