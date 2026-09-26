@@ -96,8 +96,10 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
   `sentiment` borrows the installed `polarity/classify` student
   (`SentimentModule.system1_student`, handed over by `apply_system1` via `use_student`)
   for **neutral segments only**; `gate` needs the pinned `NEUTRAL` calibration in
-  `core/sentiment.py` (its `artifact_id` and `SCORE_SIGNATURE_SHA256` must match), else
-  it shadows. It ships `None` until a lab calibration run pins one.
+  `core/sentiment.py` (its `artifact_id`, `SCORE_SIGNATURE_SHA256` and the score calls'
+  `model`, `@<ctx>` aside, must match), else it shadows. It ships `None` until a lab
+  calibration run pins one: `tools/system1/sentiment_calibration.py` turns a shadow log
+  into the pass test and the block to pin.
 - `distill/` — the campaign (depends on `system1`, never on `cascade`):
   `questions.py` (signature -> laya question + binds), `segment.py`, `splits.py`,
   `dataset.py` (the aiagent -> devai contract), `label.py` (teacher votes),

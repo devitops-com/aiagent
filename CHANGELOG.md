@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **A calibration script for `sentiment`'s System 1:**
+  `tools/system1/sentiment_calibration.py` reads a sentiment shadow log (from a
+  shadow run at `--resample 3`) and prints the calibrated level of the neutral
+  segments with its standard error and spread, coverage (overall, by `n_tokens` and,
+  with a corpus sidecar, by source and language), the pass test (band agreement and
+  per-document mean drift) at the installed τ and over a τ sweep, and the
+  `NEUTRAL` block to pin, with every number in `--json`. The block names the model
+  from the `model` field of the lines it analyses; for lines without one (a 0.7.0
+  log, alone or joined with a newer one), `--model` gives it, and must agree with
+  the model the other lines name.
+- **The sentiment shadow log records the model:** each line gains `model`, after
+  `artifact_id`: the model string of the LM the score calls used, with its `@<ctx>`
+  context window.
+
+### Changed
+- **`sentiment`'s System 1 gate also needs the calibration's model.** A pinned
+  calibration names the model it was measured with (without the `@<ctx>` context
+  window, which does not change the scores). In gate mode, a run whose score calls
+  use another model string (`::think` against `::nothink` included) only shadows,
+  with one warning naming both; so does one whose LM reports no model string, and
+  with no LM at all it warns, then fails as off mode does. It compares the
+  configured model string, not the model the router serves under it.
+
 ## [0.7.0] - 2026-09-26
 
 ### Added

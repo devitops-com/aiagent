@@ -9,7 +9,8 @@ new fixture fails here first). ``install(tau=0.0)`` makes every answer clear τ,
 Per-segment LLM answers use DummyLM's dict mode, as in test_sentiment.py: the explain
 answer comes first, under a field header only the explain prompt carries, and no segment
 text is a substring of another. Unless a test says otherwise, ``NEUTRAL`` is pinned to
-the fixture's ``artifact_id`` and the current ``ScoreSegment`` hash.
+the fixture's ``artifact_id``, the current ``ScoreSegment`` hash and DummyLM's model, which
+is what the LM in effect reports (``lm_for`` makes one that reports another).
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from aiagent.core.sentiment import (
     NeutralCalibration,
     ScoreSegment,
     SentimentModule,
+    calibration_model,
 )
 from aiagent.core.sentiment_stats import summarize
 from aiagent.distill.questions import derive, signature_sha256
@@ -78,11 +80,14 @@ TEXT = "\n\n".join(ORDER)  # paragraphs: one segment each
 CALIBRATION = {"level": 0.4, "se": 0.05, "sigma_between": 0.6, "sigma_within": 1.2}
 LABELS = ("negative", "neutral", "mixed", "positive")
 FIELDS = [
-    "ts", "artifact_id", "run_id", "seg_index", "n_segments", "doc_sha256", "input_sha256",
+    "ts", "artifact_id", "model", "run_id", "seg_index", "n_segments", "doc_sha256", "input_sha256",
     "n_tokens", "fits", "student", "confidence", "would_accept", "llm_samples", "student_ms",
 ]
 GENERIC_WARNING = "no predictor has an installed"
 STALE = "calibration is missing or stale"
+DUMMY_MODEL = "dummy"  # DummyLM's .model: the model string the LM in effect reports
+TEACHER = "openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink"  # as a calibration names it
+SERVED = f"{TEACHER}@118784"  # as the LM reports it: with the context window
 
 
 # --------------------------------------------------------------------------- helpers
@@ -185,6 +190,7 @@ def pin(
     fields: dict[str, Any] = {
         "artifact_id": installed.artifact_id,
         "score_signature_sha256": signature_sha256(ScoreSegment),
+        "model": DUMMY_MODEL,
         "n": 120,
         "measured": "2026-09-26, test corpus",
         **CALIBRATION,
@@ -193,6 +199,13 @@ def pin(
     calibration = NeutralCalibration(**fields)
     monkeypatch.setattr(sentiment_mod, "NEUTRAL", calibration)
     return calibration
+
+
+def lm_for(model: str) -> Any:
+    """A DummyLM with the usual answers that reports `model`, as a configured LM does."""
+    lm = DummyLM(answers())
+    lm.model = model
+    return lm
 
 
 def with_student(settings: Settings, registry: SkillRegistry) -> tuple[Any, tuple[str, ...]]:
@@ -245,7 +258,7 @@ def test_the_score_signature_hash_is_pinned() -> None:
 
 def test_the_student_variance_stands_in_for_an_r_sample_mean() -> None:
     calibration = NeutralCalibration(
-        artifact_id="a", score_signature_sha256="h", n=10, measured="m", **CALIBRATION
+        artifact_id="a", score_signature_sha256="h", model="m", n=10, measured="m", **CALIBRATION
     )
     assert calibration.variance(1) == pytest.approx(0.6**2 + 1.2**2)
     assert calibration.variance(3) == pytest.approx(0.6**2 + 1.2**2 / 3)
@@ -413,6 +426,7 @@ def test_shadow_keeps_off_modes_statistics_and_logs_every_segment(
     assert len({line["run_id"] for line in lines}) == 1
     assert {line["doc_sha256"] for line in lines} == {sha256(text)}
     assert {line["artifact_id"] for line in lines} == {installed.artifact_id}
+    assert {line["model"] for line in lines} == {DUMMY_MODEL}  # the LM in effect
     for segment, line in zip(segments, lines, strict=True):
         answer = student_answer(runtime, segment)
         assert line["input_sha256"] == sha256(segment)
@@ -518,6 +532,204 @@ def test_the_shipped_calibration_is_none_so_gate_shadows(
 
     assert pred.system1["mode"] == "shadow"
     assert any(STALE in w for w in warnings_in(caplog))
+
+
+# --------------------------------------------------------------------------- the model guard
+
+
+@pytest.mark.parametrize(
+    ("lm_model", "expected"),
+    [
+        (SERVED, TEACHER),
+        (TEACHER, TEACHER),
+        ("openai/m::mtp::think@4096", "openai/m::mtp::think"),
+        ("openai/m::nothink@8192@118784", "openai/m::nothink@8192"),  # the last one only
+        ("openai/org/model@latest", "openai/org/model@latest"),  # not a context window
+        ("openai/m@", "openai/m@"),
+        ("openai/m@12x", "openai/m@12x"),
+        (DUMMY_MODEL, DUMMY_MODEL),
+    ],
+)
+def test_calibration_model_drops_only_a_trailing_context_window(
+    lm_model: str, expected: str
+) -> None:
+    assert calibration_model(lm_model) == expected
+
+
+@pytest.mark.parametrize("served", [TEACHER, SERVED], ids=["same", "only-ctx-differs"])
+def test_gate_takes_segments_when_the_calibration_model_matches(
+    served: str,
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed, model=TEACHER)
+    module, _ = with_student(settings, registry)
+    lm = lm_for(served)
+
+    pred = run(module, lm)
+
+    assert pred.system1["mode"] == "gate"
+    assert scored_segments(lm) == {OTHER[0]: 1, OTHER[1]: 1}
+    assert [s["source"] for s in pred.segments] == [
+        "student", "llm", "student", "llm", "student"
+    ]
+    assert warnings_in(caplog) == []
+    assert {line["model"] for line in shadow_lines(settings)} == {served}  # as the LM has it
+
+
+ANOTHER_MODEL = "openai/Qwen3.9-32B-devai::mtp::nothink@118784"
+THINKING = f"{TEACHER.removesuffix('::nothink')}::think@118784"
+
+
+@pytest.mark.parametrize("served", [ANOTHER_MODEL, THINKING], ids=["another-model", "think"])
+def test_gate_with_another_model_only_shadows_with_one_warning(
+    served: str,
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed, model=TEACHER)
+    module, names = with_student(settings, registry)
+    lm = lm_for(served)
+
+    pred = run(module, lm)
+
+    assert names == ("score",)
+    [warning] = warnings_in(caplog)
+    now = calibration_model(served)
+    assert (
+        f"sentiment's System 1 calibration was measured with {TEACHER}, but this run uses "
+        f"{now}, so it only shadows; recalibrate for {now}"
+    ) == warning
+    assert scored_segments(lm) == dict.fromkeys(ORDER, 1)  # the LLM scores everything
+    assert pred.system1["mode"] == "shadow"
+    assert pred.system1["accepted"] == 3  # what a calibrated gate would have taken
+    assert all(s["source"] == "llm" for s in pred.segments)
+    assert without_student(pred) == without_student(off(lm_for(served)))
+    lines = shadow_lines(settings)
+    assert {line["model"] for line in lines} == {served}
+    assert [line["llm_samples"] for line in lines] == [[SCORES[s]] for s in ORDER]
+
+
+def test_gate_with_no_lm_for_its_score_calls_only_shadows(
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only explain has an LM. A calibrated gate would take all three neutral segments and
+    make no score call; shadowing, the first score call fails as it does in off mode."""
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed)
+    module, _ = with_student(settings, registry)
+    module.explain.lm = DummyLM(answers())
+
+    with dspy.context(lm=None), pytest.raises(ValueError, match="No LM is loaded"):
+        module(text="\n\n".join(NEUTRAL))
+
+    [warning] = warnings_in(caplog)
+    assert no_model_warning(DUMMY_MODEL) == warning
+
+
+def no_model_warning(calibrated: str) -> str:
+    return (
+        f"sentiment's System 1 calibration was measured with {calibrated}, but this run's "
+        "score calls have no LM with a model string, so it only shadows"
+    )
+
+
+@pytest.mark.parametrize("reported", [None, 42], ids=["none", "not-a-string"])
+def test_gate_with_an_lm_that_reports_no_model_string_only_shadows(
+    reported: object,
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A working LM whose `model` is not a string counts as no LM for the guard: gate only
+    shadows, with the same warning, and the LLM scores every segment."""
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed)
+    module, _ = with_student(settings, registry)
+    lm = lm_for(DUMMY_MODEL)
+    lm.model = reported
+
+    pred = run(module, lm)
+
+    [warning] = warnings_in(caplog)
+    assert no_model_warning(DUMMY_MODEL) == warning
+    assert pred.system1["mode"] == "shadow"
+    assert pred.system1["accepted"] == 3  # what a calibrated gate would have taken
+    assert scored_segments(lm) == dict.fromkeys(ORDER, 1)
+    assert all(s["source"] == "llm" for s in pred.segments)
+    assert {line["model"] for line in shadow_lines(settings)} == {None}
+
+
+@pytest.mark.parametrize(
+    ("own", "current", "mode"),
+    [(SERVED, ANOTHER_MODEL, "gate"), (ANOTHER_MODEL, SERVED, "shadow")],
+    ids=["own-matches", "own-differs"],
+)
+def test_the_guard_checks_the_lm_the_score_calls_use(
+    own: str,
+    current: str,
+    mode: str,
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`score`'s own LM, when it has one, wins over dspy's current LM, as in Predict."""
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed, model=TEACHER)
+    module, _ = with_student(settings, registry)
+    score_lm = lm_for(own)
+    module.score.set_lm(score_lm)
+
+    pred = run(module, lm_for(current))
+
+    assert pred.system1["mode"] == mode
+    expected = {OTHER[0]: 1, OTHER[1]: 1} if mode == "gate" else dict.fromkeys(ORDER, 1)
+    assert scored_segments(score_lm) == expected
+    assert {line["model"] for line in shadow_lines(settings)} == {own}
+
+
+def test_the_model_warning_is_given_once_per_module_across_calls_and_threads(
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed, model=TEACHER)
+    module, _ = with_student(settings, registry)
+    lm = lm_for(ANOTHER_MODEL)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:  # as `run --jsonl` runs documents
+        futures = [
+            pool.submit(contextvars.copy_context().run, run, module, lm) for _ in range(8)
+        ]
+        modes = [future.result(timeout=120).system1["mode"] for future in futures]
+    modes += [run(module, lm).system1["mode"] for _ in range(2)]
+
+    assert modes == ["shadow"] * 10
+    [warning] = warnings_in(caplog)
+    assert "so it only shadows" in warning
+
+    other, _ = with_student(settings, registry)  # another module warns on its own
+    run(other, lm)
+
+    assert len(warnings_in(caplog)) == 2
 
 
 # --------------------------------------------------------------------------- failing open

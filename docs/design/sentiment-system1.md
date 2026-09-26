@@ -86,8 +86,10 @@ new dependency, no new training campaign.
     **σ²(r) = σ_b² + σ_w²/r**. With both parts pinned, one run serves every `--resample`.
 - **The pinned record,** in `core/sentiment.py`, next to `ScoreSegment`, with a comment that cites
   the run:
-  `NeutralCalibration(artifact_id, score_signature_sha256, level, se, sigma_between, sigma_within, n, measured)`.
-  `n` and `se` are reported with it.
+  `NeutralCalibration(artifact_id, score_signature_sha256, model, level, se, sigma_between, sigma_within, n, measured)`.
+  `n` and `se` are reported with it. `model` (PR 3) is the model string of the LM the run
+  scored with, without its `@<ctx>`: the context window does not change the scores, while the
+  model, `::mtp` and `::nothink`/`::think` do (§2.4).
 - **Statistics:**
 
   | Statistic | Computed over |
@@ -143,7 +145,8 @@ new dependency, no new training campaign.
   - its top label is `neutral`;
   - its `answer_confidence` is at least τ: the installed τ (0.894 for `a866e0a4`), or
     `system1_min_conf` when that is set;
-  - a calibration matching this student and `ScoreSegment` is pinned (§2.4).
+  - a calibration matching this student, `ScoreSegment` and the score calls' model (its
+    `@<ctx>` aside) is pinned (§2.4).
 
   The segment then gets **no LLM call at all**.
 - **Every other segment** goes to the LLM with `--resample` samples, exactly as in off mode.
@@ -233,6 +236,12 @@ accepted).**
   - Otherwise the module warns once ("sentiment's System 1 calibration is missing or stale …") and
     shadows.
   - So a new polarity student, or any change to `ScoreSegment`, can never gate with a stale value.
+  - **The model guard (PR 3),** in `forward`, gate only: the LM the score calls use (the `score`
+    predictor's own LM, else dspy's current one, as `Predict` picks it) must report
+    `NEUTRAL.model`, its `@<ctx>` aside. Otherwise, or with no LM (or one whose `model` is not
+    a string), that call shadows, and the module warns once ("… was measured with A, but this
+    run uses B, so it only shadows; recalibrate for B", or "… but this run's score calls have
+    no LM with a model string …").
 - **Lazy imports.**
   - `core/sentiment.py` names `Student` only under `TYPE_CHECKING`.
   - `cli/sentiment.py` imports `aiagent.system1.cascade` only when the mode is not `off`, as
@@ -267,6 +276,7 @@ accepted).**
     | Field | Meaning |
     |---|---|
     | `ts`, `artifact_id` | As in polarity's log. |
+    | `model` | The model string of the LM the score calls used, `@<ctx>` included (PR 3; the 0.7.0 log has none). |
     | `run_id` | Random, one per `forward` call (one document in `run --jsonl`). It groups a document's lines. |
     | `seg_index`, `n_segments` | The segment's position in its run, and the run's segment count. |
     | `doc_sha256` | sha256 of the text given to `forward`. It joins a run to a corpus sidecar (source, language), as the fresh-500 analysis did. |
@@ -441,7 +451,7 @@ T ≈ [L + n·s]  (System 1 on)  +  r·m·t / S  +  t_e
 | n | Segments | 24 |
 | r | Resamples | 1 or 3 |
 | m | Escalated segments | n × (1 − coverage) |
-| t | One warm CoT call | **1.88 s mean, measured** (2026-09-26, devai lab: 24 warm `ScoreSegment` calls one at a time, cache off, fresh-500 texts cut to 1,200 characters, on the teacher `Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784`). The median is 1.67 s and p90 2.50 s. The model uses the mean, since totals are what add up. It was 2 s assumed before. |
+| t | One warm CoT call | **1.88 s mean, measured** (2026-09-26, devai lab: 24 warm `ScoreSegment` calls one at a time, cache off, on the first fresh-500 texts: capped at 1,200 characters, which none reached, so median 136 and at most 855 characters, about a third of a document segment (median 400), on the teacher `Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784`). The median is 1.67 s and p90 2.50 s. The model uses the mean, since totals are what add up. It was 2 s assumed before. |
 | t_e | The explain call | t |
 | S | Speedup at 4 in flight | **3.18, measured** in the same run: the same 24 calls took 14.2 s at 4 in flight against 45.2 s one at a time, with no failures (a call at 4 in flight took 2.19 s, median). The teacher's vLLM runs `--max-num-seqs 4`, so this is the engine's full parallelism. Every process and lab user shares those 4 slots: two aiagent processes at once each get less. r = 3 was not run separately; its calls are the same kind, three times as many. Sentiment runs on the `default` alias, which is not necessarily a 4-slot vLLM backend. On a 1-slot backend S ≈ 1. |
 
@@ -522,8 +532,8 @@ several sources into one text (`cli/sentiment.py:62`).
     reported too.
 - **If the test fails at the installed τ,** the log shows whether a higher τ would pass. A per-skill
   τ is out of scope, so that becomes a follow-up decision.
-- **Pin.** PR 3 adds `NEUTRAL` with the run's `artifact_id` and `ScoreSegment` hash, plus the
-  script and its unit test. The owner then enables `system1_mode.sentiment = "gate"` for the
+- **Pin.** PR 3 adds `NEUTRAL` with the run's `artifact_id`, `ScoreSegment` hash and model, plus
+  the script and its unit test. The owner then enables `system1_mode.sentiment = "gate"` for the
   corpora that passed.
 
 ### 2.10 Tests, docs, CHANGELOG
@@ -658,8 +668,10 @@ several sources into one text (`cli/sentiment.py:62`).
      the LLM (`too_long`, visible through `n_tokens`), and coverage falls.
 3. **Stale calibration.**
    - A new polarity student or a `ScoreSegment` change is guarded: the run shadows.
-   - A change of the model behind the `default` alias is **not** guarded, because the served model
-     is not known without a network call. The manual says to recalibrate.
+   - A model change is guarded too (PR 3, §2.4): the configured model string, `::think` or
+     `::nothink` included, must be the calibration's, its `@<ctx>` aside.
+   - A router that serves a different model under the same name is **not** guarded, because the
+     served model is not known without a network call. The manual says to recalibrate.
 4. **Two instruments.** The σ term restores the spread to first order only, and only for a corpus
    like the calibration corpus.
 5. **Selection.**
@@ -693,7 +705,6 @@ several sources into one text (`cli/sentiment.py:62`).
 - **Other commands:** System 1 in `eval` and `optimize` (sentiment is run-only).
 - **Statistics:** the independence assumption and the z-versus-t CI. They are documented, not
   changed.
-- **Guarding the calibration against a model change.**
 
 ## 3. Owner decisions (2026-09-26)
 
@@ -710,6 +721,12 @@ Each recommendation is the decision:
 | D6 | The default `--resample` is 1. |
 | D7 | Calibrate on the corpus the owner means to gate; without one, about 110 full Wikipedia articles as a stand-in, plus the fresh-500 review run. |
 | D8 | PR 1 is released as 0.6.0. |
+
+**Later, for PR 3: the model guard** (owner decision, 2026-09-26). D2's pin also names the model
+the calibration was measured with: `NEUTRAL.model`, the score calls' model string without its
+`@<ctx>`. Gate with another model string (`::think` against `::nothink` included), or with no LM,
+only shadows (§2.4). This was out of scope before (§2.11); a router that serves another model
+under the same name is still not guarded (§2.11, risk 3).
 
 ## 4. Delivery
 
@@ -750,6 +767,21 @@ Each recommendation is the decision:
    - the document run and the review run, in shadow mode at r = 3;
    - the analysis and the pass test;
    - a PR that pins `NEUTRAL`, with the script.
+
+   **PR 3 as built (so far)** (2026-09-26):
+   - `tools/system1/sentiment_calibration.py`, the analysis script (§2.9), with its unit test: it
+     prints every number of §2.9 and the `NEUTRAL` block to pin. The block's `model` comes from
+     the `model` field of the analysed lines (the first complete run per document; lines left
+     out do not count), or from `--model` for those that have none (0.7.0). Analysed lines of
+     several models, a `--model` that differs from theirs, or lines that name a model only in
+     part (a 0.7.0 log joined with a newer one) without `--model` are bad input (exit 2); with
+     no model at all nothing is pinned. `--model` must have the shape `compose_model_string`
+     gives (`<provider>/<model>::<think|nothink>[@<ctx>]`), and the header, the JSON and the
+     block say how many analysed lines took it.
+   - The model guard (owner decision, 2026-09-26; §3): `NeutralCalibration.model`, compared with
+     the score calls' LM per `forward`, `@<ctx>` aside (`strip_ctx` of `llm/registry.py`, the
+     parse `compose_model_string` uses); another model or no LM shadows, with one warning per
+     module (§2.4). The shadow log gains `model`, after `artifact_id`.
 
    After that, the owner enables `system1_mode.sentiment = "gate"` for the corpora that passed.
 
