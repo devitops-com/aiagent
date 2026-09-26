@@ -1,13 +1,17 @@
 """Aggregate per-segment sentiment samples into summary statistics (pure).
 
-Given a list of per-segment score samples (each segment scored ``resample``
-times), this computes the overall sentiment plus the statistical properties the
-skill reports:
+Given a list of per-segment score samples (each segment scored up to ``resample``
+times; a sample that did not parse is simply missing), this computes the overall
+sentiment plus the statistical properties the skill reports:
 
 * **volatility** — sample standard deviation of the per-segment mean scores; how
   much sentiment swings *across the content*.
-* **model_uncertainty** — mean within-segment standard deviation across the
-  resamples; how much the model *disagrees with itself* on the same passage.
+* **model_uncertainty** — the pooled within-segment standard deviation,
+  √(mean s²) over the segments with at least two samples; how much the model
+  *disagrees with itself* on the same passage. ``None`` when no segment has two
+  samples; ``n_resampled`` says how many segments it covers. Pooling variances,
+  not averaging standard deviations, keeps it comparable across ``resample``
+  settings (the mean of sample standard deviations is biased low, more so at 2).
 * **significance** — a one-sample Student's t-test of the segment means against a
   neutral mean of 0, reported as a t-statistic and two-sided p-value, plus a
   qualitative confidence label.
@@ -36,9 +40,10 @@ class SentimentStats:
 
     n_segments: int
     n_samples: int
+    n_resampled: int
     mean: float
     volatility: float
-    model_uncertainty: float
+    model_uncertainty: float | None
     std_error: float
     t_statistic: float | None
     p_value: float | None
@@ -52,13 +57,16 @@ def _mean(values: Sequence[float]) -> float:
     return math.fsum(values) / len(values)
 
 
-def _sample_stdev(values: Sequence[float]) -> float:
+def _sample_variance(values: Sequence[float]) -> float:
     n = len(values)
     if n < 2:
         return 0.0
     mu = _mean(values)
-    var = math.fsum((v - mu) ** 2 for v in values) / (n - 1)
-    return math.sqrt(var)
+    return math.fsum((v - mu) ** 2 for v in values) / (n - 1)
+
+
+def _sample_stdev(values: Sequence[float]) -> float:
+    return math.sqrt(_sample_variance(values))
 
 
 def _betacf(a: float, b: float, x: float) -> float:
@@ -151,7 +159,12 @@ def summarize(segment_samples: Sequence[Sequence[float]]) -> SentimentStats:
     n = len(segment_means)
     n_samples = sum(len(s) for s in populated)
     mean = _mean(segment_means)
-    model_uncertainty = _mean([_sample_stdev(s) for s in populated])
+    resampled = [s for s in populated if len(s) >= 2]
+    model_uncertainty = (
+        math.sqrt(_mean([_sample_variance(s) for s in resampled]))
+        if resampled
+        else None
+    )
 
     volatility = _sample_stdev(segment_means)
     std_error = volatility / math.sqrt(n) if n >= 2 else 0.0
@@ -179,6 +192,7 @@ def summarize(segment_samples: Sequence[Sequence[float]]) -> SentimentStats:
     return SentimentStats(
         n_segments=n,
         n_samples=n_samples,
+        n_resampled=len(resampled),
         mean=mean,
         volatility=volatility,
         model_uncertainty=model_uncertainty,
