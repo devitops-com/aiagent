@@ -38,7 +38,21 @@ def test_sentiment_text_human(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0, result.stdout
     assert "sentiment    : +6.00" in result.stdout
     assert "positive" in result.stdout
+    assert "uncertainty  : n/a (no segment has two readable scores)" in result.stdout
     assert "consistent" in result.stdout  # explanation echoed
+
+
+def test_sentiment_human_with_resamples(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch)
+    result = runner.invoke(
+        app,
+        ["sentiment", "--text", "Great launch. Happy team. Smooth rollout.", "--resample", "2"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "uncertainty  : 0.00  (model spread over 3 resampled segments)"
+        in result.stdout
+    )
 
 
 def test_sentiment_json(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,7 +67,30 @@ def test_sentiment_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert payload["sources"] == ["text"]
     assert "volatility" in payload
     assert "significance_p" in payload
-    assert payload["n_segments"] >= 1
+    assert payload["n_segments"] == 4
+    # The default --resample 1: one LLM sample per segment, so no model uncertainty.
+    assert payload["model_uncertainty"] is None
+    assert payload["n_resampled"] == 0
+    assert payload["n_samples"] == 4
+
+
+def test_sentiment_json_with_resamples(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy(monkeypatch)
+    result = runner.invoke(
+        app, ["sentiment", "--text", "A. B. C. D.", "--resample", "3", "--json"]
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["model_uncertainty"] == 0.0  # the dummy answers alike every time
+    assert (payload["n_resampled"], payload["n_samples"]) == (4, 12)
+
+
+def test_cli_default_resample_mirrors_the_module() -> None:
+    from aiagent.cli.sentiment import _DEFAULT_MAX_SEGMENTS, _DEFAULT_RESAMPLE
+    from aiagent.core.sentiment import DEFAULT_MAX_SEGMENTS, DEFAULT_RESAMPLE
+
+    assert _DEFAULT_RESAMPLE == DEFAULT_RESAMPLE == 1
+    assert _DEFAULT_MAX_SEGMENTS == DEFAULT_MAX_SEGMENTS
 
 
 def test_sentiment_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -95,6 +132,14 @@ def test_run_sentiment_single_shot(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["run", "sentiment", "--text", "Good. Fine. Nice."])
     assert result.exit_code == 0, result.stdout
     assert "sentiment:" in result.stdout
+
+    result = runner.invoke(
+        app, ["run", "sentiment", "--text", "Good. Fine. Nice.", "--json"]
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert (payload["model_uncertainty"], payload["n_resampled"]) == (None, 0)
+    assert payload["n_samples"] == payload["n_segments"] == 3
 
 
 def test_sentiment_verbose(monkeypatch: pytest.MonkeyPatch) -> None:

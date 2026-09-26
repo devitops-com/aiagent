@@ -605,11 +605,12 @@ folder is git-ignored and not published, because it records details of the build
 
 ## Appendix B: side findings (not part of this feature)
 
-- **aiagent: sentiment resampling is fake by default.**
-  - `SentimentModule` sends identical requests; with the default DSPy cache only the first reaches
-    the LLM, so `model_uncertainty` is always 0.
+- **aiagent: sentiment resampling was fake by default** (fixed in 0.6.0, see
+  [sentiment-system1.md](sentiment-system1.md) §2.6).
+  - `SentimentModule` sent identical requests; with the default DSPy cache only the first reached
+    the LLM, so `model_uncertainty` was always 0.
   - Reproduced: 5 real calls instead of 13, uncertainty 0.0 instead of 3.559.
-  - Fix: a distinct `rollout_id` per sample.
+  - Fix: sample *j* is a call with `rollout_id` *j* at temperature 0.7.
 - **aiagent:** the dev `.venv` has drifted from the lock (numpy 2.5.3 vs 2.5.0 pinned; tiktoken
   0.14.0 vs 0.13.0).
 - **devai:**

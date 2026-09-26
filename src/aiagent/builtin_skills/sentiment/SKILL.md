@@ -14,8 +14,9 @@ at your data; no dataset, tuning, or configuration required.
 
 Beyond the headline score it reports **volatility** (how much sentiment swings
 across the content), **model uncertainty** (how much the model disagrees with
-itself), and **statistical significance** (a t-test that the sentiment differs
-from neutral), plus a short human-readable explanation.
+itself; measured with `--resample 2` or more, `null` at the default of 1), and
+**statistical significance** (a t-test that the sentiment differs from neutral),
+plus a short human-readable explanation.
 
 ## Usage
 

@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **`sentiment` scores differ from 0.5.x.** Every LLM score is now a sample at
+  temperature 0.7: sample *j* of a segment is a call with DSPy rollout id *j*
+  (0 … r−1), so each sample is a real LLM call, and re-running the same text is
+  still answered from the cache. The default `--resample` is 1, so
+  `model_uncertainty` is `null` unless you ask for `--resample 2` or more
+  (`--resample 3` makes about three times the LLM calls). `model_uncertainty` is
+  now pooled, √ of the mean within-segment variance over the segments with at
+  least two readable scores, is `null` when no segment has two, and comes with
+  `n_resampled`, the number of segments it covers (a segment that occurs twice counts
+  twice, as in `n_samples`); `n_samples` counts the LLM score samples the statistics
+  use. Segments are scored 4 LLM calls at a time, and at
+  most 4 are in flight per process however many documents run at once
+  (`run sentiment --jsonl`); a segment that occurs twice is scored once.
 - **A release starts about half as many GitHub Actions runs, and none are cancelled
   midway.** The release workflow runs on pull requests and version tags only, no
   longer on pushes to `main`: a pull request's run builds its commits before they
@@ -19,6 +32,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   No separate version-bump commit (with its own CI runs) has to be pushed first. The
   version must be X.Y.Z in digits and not lower than the current one; without
   `VERSION`, `make release` releases the current version as before.
+
+### Fixed
+- **`sentiment` now actually measures model uncertainty.** Its resamples were
+  identical requests, and DSPy's cache (on by default) answered all but the first:
+  `model_uncertainty` was always 0, and a 24-segment run made 25 LLM calls, not 73.
+  Re-running the same text is still free.
+- **A `sentiment` score that does not parse is no longer retried through DSPy's
+  JSONAdapter**, whose retry requests server JSON mode, which devai backends strip.
+  The sample is dropped instead, and the segment keeps its other samples. A segment
+  none of whose samples parses gets up to two more samples; if none of those parses
+  either, the run fails, as it did in 0.5.x when the JSON retry failed too. The
+  error says how to get new samples, since DSPy's cache answers a re-run of the same
+  text the same way.
 
 ## [0.5.2] - 2026-09-25
 

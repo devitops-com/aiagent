@@ -221,21 +221,57 @@ aiagent sentiment --file report.pdf --url https://... -t "extra note"  # mix + r
 | `--file`, `-f <path>` | Local file: `.txt`/`.md`/`.html`/`.pdf` (repeatable). |
 | `--url`, `-u <url>` | URL to fetch and analyze via the proxy (repeatable). |
 | `--model <alias\|name>` | Model override. |
-| `--resample <n>` | LM samples per segment for the uncertainty estimate (default 3). |
+| `--resample <n>` | LLM samples per segment (default 1). 2 or more measure model uncertainty; `--resample 3` takes about three times the LLM calls and time. |
 | `--max-segments <n>` | Cap on analyzed segments; content is merged, never dropped (default 24). |
 | `--json` | Emit the full result (scores, stats, per-segment breakdown, sources) as JSON. |
 | `-v` / `-vv` / `-vvv` | Increase verbosity. |
 
 Supply at least one `--text`/`--file`/`--url` (repeatable and mixable). The
-corpus is split into segments and each is scored several times; the reported
+corpus is split into segments (paragraphs, or the sentences of a single
+paragraph), and each distinct segment is scored `--resample` times; the reported
 fields are:
 
-- **sentiment** — mean score on the −10..+10 scale, with a qualitative polarity.
+- **sentiment** — mean segment score on the −10..+10 scale, with a qualitative
+  polarity.
 - **volatility** — standard deviation of sentiment across segments (how mixed).
-- **model uncertainty** — mean self-disagreement across the resamples.
+- **model uncertainty** (`model_uncertainty`) — how much the model disagrees with
+  itself on the same segment: the pooled within-segment standard deviation,
+  √(mean s²) over the segments with at least two readable scores. `n_resampled` is
+  how many segments it covers, counted like `n_samples` (a segment that occurs twice
+  counts twice, and weighs twice). It is `null` (`n/a`) when no segment has two
+  readable scores, as with the default `--resample 1`; `--resample 3` measures it,
+  for about 73 LLM calls instead of 25 on 24 segments.
 - **significance** — a one-sample t-test of the segment scores against neutral
   (0): a t-statistic, two-sided p-value, and a confidence label; plus an
   approximate 95% confidence interval.
+- **n_samples** — the LLM score samples the statistics use. A segment that
+  occurs twice is scored once and counts at each of its places; a sample whose
+  score did not parse is not counted.
+
+How the scores are made:
+
+- **Every score is a sample at temperature 0.7.** Sample *j* of a segment is one
+  LLM call with DSPy rollout id *j* (0, 1, …), so each sample is a real call,
+  while re-running the same text is answered from DSPy's cache with the same
+  samples and result. `--resample 1` is sample 0 of `--resample 3`, so a later
+  `--resample 3` run of the same text makes only the two new samples per segment,
+  plus one explanation call.
+- **At most 4 LLM calls at a time per process** (the devai teacher's limit), for
+  all sentiment runs in the process together: `aiagent run sentiment --jsonl
+  --concurrency 16` queues its calls instead of sending 64 at once.
+- **A score that does not parse is dropped**, and never retried in server JSON
+  mode (devai backends strip it); the segment keeps its other samples. A segment
+  none of whose samples parses gets up to two more (rollout ids *r* and *r*+1); if
+  none of those parses either, the run fails, and so does any other LLM error.
+  Re-running the same text then fails the same way from the cache: a higher
+  `--resample` draws new samples, and `AIAGENT_CACHE=false` draws them all again.
+- **Limits of the statistics.** Segments are treated as independent, which
+  neighbouring paragraphs and repeated boilerplate are not, so the standard error,
+  p-value and CI are optimistic. The CI uses the normal z = 1.96, while the
+  p-value uses Student's t with n − 1 degrees of freedom. A segment's score is the
+  mean of its samples, so at `--resample 1` the volatility, standard error and
+  p-value also carry the model's own sampling noise, which more samples average
+  out: compare those fields only between runs with the same `--resample`.
 
 URLs egress through the configured [`proxy_url`](#settings) (devai's pipelock);
 the skill is run-only, so `aiagent run sentiment --text "..."` also works for a

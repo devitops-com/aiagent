@@ -26,7 +26,8 @@ def test_varied_segments_have_volatility_and_significance() -> None:
     assert stats.n_samples == 12
     assert stats.mean == pytest.approx(4.5)
     assert stats.volatility > 0
-    assert stats.model_uncertainty > 0
+    assert stats.model_uncertainty == pytest.approx(1.0)  # every segment's variance is 1
+    assert stats.n_resampled == 4
     assert 0.0 < stats.p_value < 1.0  # type: ignore[operator]
     assert stats.ci_low is not None and stats.ci_low < stats.mean < stats.ci_high  # type: ignore[operator]
     assert stats.polarity == "positive"
@@ -36,10 +37,30 @@ def test_single_segment_has_no_significance() -> None:
     stats = summarize([[5, 5, 5]])
     assert stats.n_segments == 1
     assert stats.volatility == 0.0
+    assert stats.model_uncertainty == 0.0
+    assert stats.n_resampled == 1
     assert stats.t_statistic is None
     assert stats.p_value is None
     assert stats.ci_low is None
     assert stats.confidence == "insufficient-data"
+
+
+def test_model_uncertainty_is_pooled_over_the_resampled_segments() -> None:
+    # Variances 1, 0 and 8; the single-sample segment has no spread to pool.
+    stats = summarize([[1, 2, 3], [5, 5, 5], [0, 4], [7]])
+    assert stats.model_uncertainty == pytest.approx(3.0**0.5)  # sqrt of the mean variance
+    assert stats.model_uncertainty != pytest.approx((1 + 0 + 8**0.5) / 3)  # not the mean std
+    assert stats.n_resampled == 3
+    assert stats.n_samples == 9  # every sample used, the single one too
+    assert stats.n_segments == 4
+
+
+def test_model_uncertainty_is_none_when_no_segment_was_resampled() -> None:
+    stats = summarize([[1], [2], [6]])
+    assert stats.model_uncertainty is None
+    assert stats.n_resampled == 0
+    assert stats.n_samples == 3
+    assert stats.volatility > 0  # the rest of the statistics still stand
 
 
 def test_unanimous_non_neutral_is_significant() -> None:

@@ -2,8 +2,9 @@
 
 Accepts any mix of raw ``--text``, local ``--file`` (.txt/.md/.html/.pdf), and
 ``--url`` sources; URLs are fetched through the configured proxy. Reports the
-sentiment plus volatility, model uncertainty, statistical significance, and a
-plain-language explanation, human-readable by default or as ``--json``.
+sentiment plus volatility, model uncertainty (with ``--resample`` 2 or more),
+statistical significance, and a plain-language explanation, human-readable by
+default or as ``--json``.
 
 Module-top imports stay ``dspy``-free (dspy is pulled in lazily by
 ``configure_lm``/``build_module``), preserving the fast-``--help`` invariant.
@@ -26,7 +27,7 @@ from aiagent.skills.registry import load_registry
 
 # Mirrors aiagent.core.sentiment defaults; kept local so this module imports no
 # dspy (importing core.sentiment would). Values are passed through to the module.
-_DEFAULT_RESAMPLE = 3
+_DEFAULT_RESAMPLE = 1
 _DEFAULT_MAX_SEGMENTS = 24
 
 
@@ -42,7 +43,9 @@ def sentiment(
     ),
     model: str | None = typer.Option(None, "--model", help="Model override."),
     resample: int = typer.Option(
-        _DEFAULT_RESAMPLE, "--resample", help="LM samples per segment (uncertainty)."
+        _DEFAULT_RESAMPLE,
+        "--resample",
+        help="LLM samples per segment; 2 or more measure model uncertainty.",
     ),
     max_segments: int = typer.Option(
         _DEFAULT_MAX_SEGMENTS, "--max-segments", help="Cap on analyzed segments."
@@ -99,6 +102,7 @@ def _emit(prediction: Any, docs: list[SourceDoc], as_json: bool) -> None:
                 "ci95": prediction.ci95,
                 "n_segments": prediction.n_segments,
                 "n_samples": prediction.n_samples,
+                "n_resampled": prediction.n_resampled,
                 "segments": prediction.segments,
                 "sources": origins,
                 "explanation": prediction.explanation,
@@ -111,10 +115,13 @@ def _emit(prediction: Any, docs: list[SourceDoc], as_json: bool) -> None:
         f"volatility   : {prediction.volatility:.2f}  "
         f"(across {prediction.n_segments} segments)"
     )
-    typer.echo(
-        f"uncertainty  : {prediction.model_uncertainty:.2f}  "
-        f"(model spread over {prediction.n_samples} samples)"
-    )
+    if prediction.model_uncertainty is None:
+        typer.echo("uncertainty  : n/a (no segment has two readable scores)")
+    else:
+        typer.echo(
+            f"uncertainty  : {prediction.model_uncertainty:.2f}  "
+            f"(model spread over {prediction.n_resampled} resampled segments)"
+        )
     if prediction.significance_p is not None:
         t_value = prediction.t_statistic
         tstat = "n/a" if t_value is None else f"{t_value:+.2f}"
