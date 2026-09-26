@@ -258,7 +258,10 @@ How the scores are made:
   plus one explanation call.
 - **At most 4 LLM calls at a time per process** (the devai teacher's limit), for
   all sentiment runs in the process together: `aiagent run sentiment --jsonl
-  --concurrency 16` queues its calls instead of sending 64 at once.
+  --concurrency 16` queues its calls instead of sending 64 at once. The teacher's
+  4 slots are shared by every process and lab user, so two runs at once each get
+  less. On the devai teacher a 24-segment text takes about 16 s at the default
+  and 45 s at `--resample 3` (0.5.x: about 47 s).
 - **A score that does not parse is dropped**, and never retried in server JSON
   mode (devai backends strip it); the segment keeps its other samples. A segment
   none of whose samples parses gets up to two more (rollout ids *r* and *r*+1); if

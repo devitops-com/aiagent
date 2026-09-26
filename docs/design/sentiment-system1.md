@@ -40,7 +40,7 @@ new dependency, no new training campaign.
   - A parse failure drops that one sample, with no retry through JSON mode. A segment none of
     whose samples parses gets up to 2 more rollouts before the run fails.
   - `model_uncertainty` is pooled over the resampled segments, and `null` when there are none.
-  - Real uncertainty costs about 2.8× the wall-clock (57 s against 20 s for 24 segments), so the
+  - Real uncertainty costs about 2.8× the wall-clock (45 s against 16 s for 24 segments), so the
     default becomes `--resample 1` and uncertainty is opt-in (D6).
 - **PR 2: System 1, neutral only.**
   - The installed polarity student scores a segment only when its top label is **neutral** at
@@ -52,16 +52,16 @@ new dependency, no new training campaign.
   - Two shadow runs through sentiment's own segmenter: one on the target document corpus (D7), and
     one on fresh-500 as the review corpus.
   - A written pass test (§2.9). Then pin the calibration.
-- **Modelled wall-clock** for 24 segments at an assumed 2 s per CoT call and a speedup of 2.6 at 4
-  in flight. Both numbers are measured before PR 1 merges (§2.8).
+- **Modelled wall-clock** for 24 segments at the measured 1.88 s per CoT call and speedup of 3.18
+  at 4 in flight (2026-09-26, §2.8).
 
   | Run | `--resample 1` | `--resample 3` | Uncertainty |
   |---|---|---|---|
-  | 0.5.2 today (sequential, cache bug) | 50 s | 50 s | fake (always 0) |
-  | PR 1, off | 20 s | 57 s | `null` at r=1; real at r=3 |
-  | PR 2 gate, fresh-500 mix (14% neutral coverage) | 21-23 s | 53-55 s | as off, escalated segments only |
-  | PR 2 gate, documents at 70% coverage | 10-12 s | 22-24 s | as above |
-  | PR 2 gate, documents at 90% coverage | 7-9 s | 10-12 s | as above |
+  | 0.5.2 today (sequential, cache bug) | 47 s | 47 s | fake (always 0) |
+  | PR 1, off | 16 s | 45 s | `null` at r=1; real at r=3 |
+  | PR 2 gate, fresh-500 mix (14% neutral coverage) | 17-19 s | 41-43 s | as off, escalated segments only |
+  | PR 2 gate, documents at 70% coverage | 9-11 s | 18-20 s | as above |
+  | PR 2 gate, documents at 90% coverage | 6-8 s | 9-11 s | as above |
 
 ## 2. Design
 
@@ -440,39 +440,40 @@ T ≈ [L + n·s]  (System 1 on)  +  r·m·t / S  +  t_e
 | n | Segments | 24 |
 | r | Resamples | 1 or 3 |
 | m | Escalated segments | n × (1 − coverage) |
-| t | One warm CoT call | **Assumed 2 s, not measured.** The anchor is a warm no-think polarity `Predict` call at about 0.6 s; a CoT call also writes a reasoning paragraph and a sentence. |
+| t | One warm CoT call | **1.88 s mean, measured** (2026-09-26, devai lab: 24 warm `ScoreSegment` calls one at a time, cache off, fresh-500 texts cut to 1,200 characters, on the teacher `Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784`). The median is 1.67 s and p90 2.50 s. The model uses the mean, since totals are what add up. It was 2 s assumed before. |
 | t_e | The explain call | t |
-| S | Speedup at 4 in flight | **2.6, not shown for this workload.** It was measured on the teacher with short `Predict` calls (4.4 calls/s at 4 in flight against 1/0.6 s sequentially). The teacher uses MTP speculative decoding, whose per-request gain shrinks as more requests run together. Sentiment runs on the `default` alias, which is not necessarily a 4-slot vLLM backend. On a 1-slot backend S ≈ 1. |
+| S | Speedup at 4 in flight | **3.18, measured** in the same run: the same 24 calls took 14.2 s at 4 in flight against 45.2 s one at a time, with no failures (a call at 4 in flight took 2.19 s, median). The teacher's vLLM runs `--max-num-seqs 4`, so this is the engine's full parallelism. Every process and lab user shares those 4 slots: two aiagent processes at once each get less. r = 3 was not run separately; its calls are the same kind, three times as many. Sentiment runs on the `default` alias, which is not necessarily a 4-slot vLLM backend. On a 1-slot backend S ≈ 1. |
 
 - The student pass is added in full, although pipelining hides most of its per-segment part.
 - Process start, the dspy import and ingest are the same in every mode and are left out.
 
-**At t = 2 s:**
+**At the measured t = 1.88 s and S = 3.18** (the first version of this table assumed t = 2 s and
+S = 2.6):
 
-| Run | LLM score calls (r = 3) | r = 1, S = 2.6 | r = 3, S = 2.6 | r = 3, S = 1 |
+| Run | LLM score calls (r = 3) | r = 1, S = 3.18 | r = 3, S = 3.18 | r = 3, S = 1 |
 |---|---|---|---|---|
-| 0.5.2 today (sequential, cache bug) | 24 real + 48 cache hits | 50 s | 50 s | 50 s |
-| PR 1, off | 72 | 20 s | 57 s | 146 s |
-| gate, 5% (neutral, opinion text) | 68 | 22-24 s | 58-60 s | 142-144 s |
-| gate, 14% (neutral, fresh-500 mix) | 62 | 21-23 s | 53-55 s | 129-131 s |
-| gate, 70% (documents, illustrative) | 22 | 10-12 s | 22-24 s | 48-50 s |
-| gate, 90% (Wikipedia, per text) | 7 | 7-9 s | 10-12 s | 19-21 s |
+| 0.5.2 today (sequential, cache bug) | 24 real + 48 cache hits | 47 s | 47 s | 47 s |
+| PR 1, off | 72 | 16 s | 45 s | 137 s |
+| gate, 5% (neutral, opinion text) | 68 | 18-20 s | 45-47 s | 134-136 s |
+| gate, 14% (neutral, fresh-500 mix) | 62 | 17-19 s | 41-43 s | 121-123 s |
+| gate, 70% (documents, illustrative) | 22 | 9-11 s | 18-20 s | 45-47 s |
+| gate, 90% (Wikipedia, per text) | 7 | 6-8 s | 9-11 s | 18-20 s |
 
-- **What real uncertainty costs.** At the same concurrency, today's calls would take 20 s. Real
-  uncertainty at r = 3 costs about 2.8× that, and r = 2 takes 39 s (98 s at S = 1). This is the
-  basis for D6.
+- **What real uncertainty costs.** At the same concurrency, today's calls would take 16 s. Real
+  uncertainty at r = 3 costs about 2.8× that, and r = 2 takes 30 s (92 s at S = 1). This is the
+  basis for D6. The default run (r = 1) takes about a third of 0.5.2's 47 s.
 - **Break-even of the student.** Its fixed cost is about 2.9-4.9 s for 24 segments. It saves r·t/S
-  per accepted segment: 0.77 s at r = 1, or 2.3 s at r = 3 (at S = 2.6). It therefore pays back
-  after 4-7 accepted segments at r = 1, or 2-3 at r = 3.
+  per accepted segment: 0.59 s at r = 1, or 1.8 s at r = 3. It therefore pays back after 5-9
+  accepted segments at r = 1, or 2-3 at r = 3.
 - **For a one-sentence text in a one-shot run, the gate is always a net loss.**
   - The student costs 1.1-3.1 s.
   - The saving is at most r·t, and only when the sentence is accepted.
   - `run sentiment --jsonl` amortizes the load, so batch such texts.
 - **Coverage is per segment here.** The fresh-500 figures are per text. The shadow runs give the
   per-segment ones (§2.9).
-- **Before PR 1 merges:** measure t and S for `ScoreSegment` on the default backend, at
-  `--resample 1` and `--resample 3`, each at 1 and at 4 in flight. A throwaway lab script that sets
-  `MAX_IN_FLIGHT` does this. Put the numbers in the PR and redo this table from them.
+- **Measured before PR 1 merged** (2026-09-26, by the devai session, from a throwaway lab
+  container on the resident teacher): t and S above, with a script that times `ScoreSegment` on
+  24 calls one at a time and 24 at 4 in flight. This table is redone from them.
 
 ### 2.9 Calibration and the pass test (lab, then PR 3)
 
@@ -494,7 +495,7 @@ several sources into one text (`cli/sentiment.py:62`).
 3. **The review run,** on fresh-500. Its 440 opinion texts put a number on the D3 risk.
    - Sentiment makes 1442 segments of fresh-500 (mean 2.9 per text; the English and Polish reviews
      5.3-5.9, because a one-paragraph review splits into sentences).
-   - That is 4826 calls: about **62 min** at t = 2 s and S = 2.6, or 2.7 h at S = 1.
+   - That is 4826 calls: about **48 min** at the measured t and S (§2.8), or 2.5 h at S = 1.
    - Revision 1's "25 min, one segment per text" was too low by about 2.4×, and by 5-6× for the
      reviews.
 4. **Analysis.** A small pure script in PR 3 reads the shadow log and prints everything below, so
@@ -671,7 +672,7 @@ several sources into one text (`cli/sentiment.py:62`).
      is 3 samples; 0.5.x had one ChatAdapter answer plus the JSONAdapter retry. The cache keeps
      the failed answers, so a re-run of that text fails the same way until `--resample` goes up
      or the cache is off.
-7. **The wall-clock model** rests on an assumed t and S until PR 1 measures them.
+7. **The wall-clock model** rested on an assumed t and S; both were measured on 2026-09-26 (§2.8).
 
 **Out of scope:**
 
@@ -758,6 +759,6 @@ No point was rejected. Where a point offered a choice, the choice is named.
 |---|---|---|
 | D2 (redone) | How a student segment is scored, and when it may gate | **Neutral only, one calibrated value.** The student scores a segment only when its top label is neutral at ≥ τ, as `NEUTRAL.level` (the mean LLM score of such segments). σ_b and σ_w enter the standard error. All of it is pinned to the student's `artifact_id` and `ScoreSegment`'s hash. Pass test before gate: a CP lower bound of band agreement ≥ 0.90, and a 95th percentile of the per-document mean drift ≤ 0.5 over ≥ 100 documents. |
 | D3 (redone) | Where gate may be used | **Per corpus, documents only, after the pass test.** Review and opinion corpora stay off or shadow, as the owner's approval says. The fresh-500 review run records how much a review that goes through the gate by mistake would shift. A call that mixes sources counts as its most opinionated source. |
-| D6 (new) | The default `--resample` | **1.** It is the fastest honest choice: 20 s against 57 s for 24 segments. Uncertainty is `null` by default, and `--resample 3` measures it on request. It has been fake since release without anyone noticing. |
-| D7 (new) | The target document corpus, and lab time for the two shadow runs | **The corpus the owner means to gate.** If none is ready, use about 110 full Wikipedia articles (en/de/hr, the same pinned dump as fresh-500, disjoint from it) as a stand-in; that certifies encyclopedic documents only. Budget at t = 2 s: about 1.7 h for the documents (4.5 h at S = 1), plus about 1 h for fresh-500 (2.7 h). PR 1's measured t and S and the `split_segments` counts replace these estimates. |
+| D6 (new) | The default `--resample` | **1.** It is the fastest honest choice: 20 s against 57 s for 24 segments (16 s against 45 s as measured, §2.8). Uncertainty is `null` by default, and `--resample 3` measures it on request. It has been fake since release without anyone noticing. |
+| D7 (new) | The target document corpus, and lab time for the two shadow runs | **The corpus the owner means to gate.** If none is ready, use about 110 full Wikipedia articles (en/de/hr, the same pinned dump as fresh-500, disjoint from it) as a stand-in; that certifies encyclopedic documents only. Budget at t = 2 s: about 1.7 h for the documents (4.5 h at S = 1), plus about 1 h for fresh-500 (2.7 h). PR 1's measured t and S and the `split_segments` counts replace these estimates (at the measured t and S: about 1.3 h and 0.8 h; 4.2 h and 2.5 h at S = 1). |
 | D8 (new) | The version of PR 1 | **0.6.0, not 0.5.3.** It changes every user's scores, the default `--resample` and a JSON type. The CHANGELOG says that scores differ from 0.5.x. |
