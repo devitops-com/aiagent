@@ -1,6 +1,7 @@
 # System 1 in the sentiment skill: design
 
-**Status:** design, 2026-09-26, revision 2. Nothing is implemented.
+**Status:** design, 2026-09-26, revision 2. PR 1 is released in 0.6.0; PR 2 is built, shipped
+uncalibrated (§4, "PR 2 as built"); PR 3 waits for the lab runs.
 - A review raised 13 points on revision 1, all applied here (§5). The owner decided D1-D8 on
   2026-09-26: "go with recommendations" (§3).
 
@@ -725,6 +726,25 @@ Each recommendation is the decision:
    - the neutral-only gate and the shadow log;
    - the student term in `summarize`;
    - the JSON changes, and docs.
+
+   **PR 2 as built** (2026-09-26), where it departs from or adds to the text above:
+   - `Student.consult` takes a state dict, built by `Student.state(text)`; `Student.tau` gives τ.
+     `_PREDICT_LOCK` covers the whole `runtime.predict` (tokenizing, tensors, `session.run`,
+     decoding), not `session.run` alone.
+   - `SentimentModule.system1_predictor = "score"` names the log folder (`sentiment/score/`) and
+     what `apply_system1` returns, so `cascade.py` holds no sentiment detail.
+   - `would_accept` in the log and `accepted` in the `system1` block ignore whether a calibration is
+     pinned, so the shadow runs can be analysed while `NEUTRAL` is `None`.
+   - Gate mode logs too, with `llm_samples` `[]` for a segment the student scored. A repeated
+     segment reuses its first verdict and logs at each position, with `student_ms` 0 on repeats.
+     A segment with no verdict (a broken student) gets no line.
+   - Shadow, like gate, asks the student before each segment's LLM submission, so the first
+     student load (1-3 s) also delays shadow's first LLM call.
+   - The "k of n segments neutral (System 1)" line follows the LLM lines, outside the
+     2000-character budget.
+   - A `polarity` skill that is missing or cannot be built leaves sentiment on the LLM, with one
+     warning.
+   - The human line names the student by the first 8 characters of its `artifact_id`.
 3. **Lab, then PR 3:**
    - count the segments;
    - the document run and the review run, in shadow mode at r = 3;

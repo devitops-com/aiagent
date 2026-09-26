@@ -65,7 +65,7 @@ def run(
     if settings.system1_mode.get(target.name, "off") != "off":
         from aiagent.system1.cascade import apply_system1  # lazy: numpy, ORT
 
-        apply_system1(module, target, settings)
+        apply_system1(module, target, settings, registry)
     with verbosity_scope(verbose=verbose, skill=target.name):
         if jsonl is not None:
             failed = _run_batch(module, rows, concurrency)

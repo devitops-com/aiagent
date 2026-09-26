@@ -276,6 +276,50 @@ How the scores are made:
   p-value also carry the model's own sampling noise, which more samples average
   out: compare those fields only between runs with the same `--resample`.
 
+**System 1, neutral segments only.** With `system1_mode.sentiment` set to `shadow`
+or `gate` (independent of `system1_mode.polarity`), sentiment borrows the installed
+`polarity/classify` student (see [`distill`](#distill--train-a-system-1-student));
+it has none of its own. Off, the default, never loads it. The student decides each
+distinct segment in order (one too long for it to see whole goes to the LLM), and
+each segment's LLM samples start as soon as it has decided. Shadow and gate both
+log one line per segment, without its text, to sentiment's shadow log (its path and
+fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
+
+- **shadow**: the LLM scores every segment as in off mode, so the statistics are
+  off mode's. Run it on the target corpus first: a calibration is measured from its
+  log.
+- **gate**: a segment the student calls `neutral` at τ or more (polarity's
+  installed τ, or `system1_min_conf`) gets no LLM call. It scores one calibrated
+  level, the mean LLM score of such segments in a sentiment shadow run, and that
+  run's measured spread enters the volatility and the standard error, so a student
+  segment never counts as error-free. Every other segment is scored as in off mode.
+  The level is pinned in the code for one student (`artifact_id`) and one
+  `ScoreSegment`; **none is pinned yet**, so gate runs as shadow, with a warning,
+  until a lab run on the target corpus pins one.
+- **Use gate only for document corpora** that passed that run's test. Review and
+  opinion corpora stay off or shadow: on opinion text the student's neutral calls
+  are its weakest. `aiagent sentiment` joins its sources into one text, so a call
+  that mixes a review with an article counts as a review.
+- **In gate mode `model_uncertainty` covers only the segments the LLM scored**
+  (`n_resampled` of them), the harder ones: it is not comparable with an off-mode
+  run. `n_samples` counts LLM samples only.
+- **Output.** Each segment gets `source` (`"llm"` or `"student"`; a student
+  segment's `rationale` is `null`) and `student` (`{label, confidence}` whenever the
+  student answered it, in shadow or gate; `null` when it was too long, the student
+  failed, or System 1 is off). The top-level `system1` is `null` when off or when no
+  student is usable (a warning says why), else `{mode, student, artifact_id, tau,
+  accepted, too_long, coverage}`: `mode` is the effective one, `accepted` the
+  segments the gate took (or, in shadow, would have taken), `coverage` accepted over
+  `n_segments`. The human output adds a line such as
+  `system 1     : 18/24 segments by the student (gate, polarity a866e0a4), 1 too long`
+  (in shadow: `would be by the student`).
+- **The explanation** sees the LLM segments' rationales as before. When the gate
+  gave segments to the student, it also gets one line, never their text, such as
+  `18 of 24 segments neutral (System 1)`.
+- **Cost.** Loading the student takes 1-3 s once per process, then 50-110 ms per
+  segment: for a one-sentence text in a one-shot run the gate is a net loss, so
+  batch such texts with `aiagent run sentiment --jsonl` (one load for all of them).
+
 URLs egress through the configured [`proxy_url`](#settings) (devai's pipelock);
 the skill is run-only, so `aiagent run sentiment --text "..."` also works for a
 single text blob.
@@ -424,7 +468,8 @@ Under `artifacts_dir` (default `~/.local/share/aiagent/artifacts`; a student is 
 `install.json`), `current.json` naming it, and the shadow log `shadow.jsonl`.
 
 **Serving: off → shadow → gate.** Installing does not switch anything on.
-`system1_mode` does, per skill, and only for `aiagent run`. Use `run --jsonl` for
+`system1_mode` does, per skill, and only for `aiagent run` and `aiagent sentiment`
+(which borrows polarity's student: see below). Use `run --jsonl` for
 more than a handful of inputs: one process loads the student once (about 0.85 s)
 and then answers each input in about 50 ms, while one-shot `run` calls pay that load
 every time, which is slower than a warm LLM call:
@@ -459,6 +504,26 @@ rest of the run). A student whose skill signature or questions changed since it 
 trained is not used at all (warning: distill again); one whose skill files changed
 is only shadowed in gate mode, with a warning to run `eval` and `install` again.
 
+**Sentiment borrows polarity's student** under `system1_mode.sentiment`, for
+neutral segments only ([`sentiment`](#sentiment--analyze-sentiment-of-data-sources)).
+The same checks apply to `polarity/classify` (not installed or unbound: sentiment
+stays on the LLM, with a warning naming `polarity/classify`; polarity's skill files
+changed: gate only shadows). In shadow and gate mode it logs to
+`system1/skills/sentiment/score/shadow.jsonl`, one line per segment of each run
+(written together), with no text: `ts`, `artifact_id`, `run_id` (random, one per
+document), `seg_index` and `n_segments`, `doc_sha256` (the sha256 of the whole text,
+to join a run to a corpus), `input_sha256` (of the segment), `n_tokens` and `fits`
+(whether the student saw it whole), `student` and `confidence` (its top label and
+that label's confidence; `null` when it did not fit), `would_accept` (whether the
+neutral-only gate takes the segment, calibration pinned or not), `llm_samples` (the
+LLM's scores in rollout order, `null` for a sample that did not parse; `[]` for a
+segment the gate gave the student) and `student_ms` (the student's time; 0 where a
+repeated segment reused its first verdict). Gate needs a calibration pinned for the
+installed student and the current `ScoreSegment`; otherwise it shadows, with a
+warning. Recalibrate after a new polarity student, a `ScoreSegment` change, or a
+change of the model behind the `default` alias (that one is not detected: the served
+model is not known without a network call).
+
 **One-shot cost.** In shadow and gate mode each `aiagent run` loads the student
 first: the multilingual export took 2.81 s to load on a CPU, and its 34 MB
 tokenizer is parsed too. For a single input that can be slower than a warm LLM
@@ -477,7 +542,7 @@ pilot. Predictors with more
 than one output (the gate does not certify their joint precision), more than one
 input or a non-`str` input, and free-text or `float` outputs. A student shorter
 than the base's 1024 tokens (`label --max-len`), and int8/fp16 students. The
-cascade in commands other than `run`.
+cascade in commands other than `run` and `sentiment`.
 
 ### `chat` — resumable multi-turn Q&A
 
@@ -573,7 +638,7 @@ the same name. Inspect the resolved result with `aiagent config show`.
 | `distill_dir` | `/laya` | The distill volume shared with devai (host `/var/cache/devai/laya`): `base/` (read), `inbox/` (write), `datasets/` and `runs/` (read). |
 | `trainer_api_base` | `http://devai-router:11438/v1` | devai's OpenAI-compatible fine-tuning jobs API (reached directly, never through `proxy_url`). |
 | `artifacts_dir` | `~/.local/share/aiagent/artifacts` | Installed System 1 students (about 1.3 GB each), eval reports and shadow logs, all under `system1/`. |
-| `system1_mode` | `{}` (all `off`) | Per-skill System 1 mode, `off`, `shadow` or `gate`. Env: JSON, e.g. `AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}'`; TOML: a `[system1_mode]` table. |
+| `system1_mode` | `{}` (all `off`) | Per-skill System 1 mode, `off`, `shadow` or `gate`; `sentiment` borrows polarity's student, for neutral segments only. Env: JSON, e.g. `AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}'`; TOML: a `[system1_mode]` table. |
 | `system1_min_conf` | `null` | A confidence threshold for every question, in (0, 1], instead of each installed τ. |
 
 ### TOML example

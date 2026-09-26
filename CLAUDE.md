@@ -91,8 +91,13 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
   package data. **Keep the split** — never merge engine and content dirs.
 - `system1/` — the System 1 student layer: `contract.py` (hashing, ids, SHA256SUMS),
   `sequence.py` (laya's input layout on raw `tokenizers`), `runtime.py`
-  (onnxruntime), `artifacts.py` (verify/install/load), `cascade.py` (`System1First`,
-  `apply_system1`; applied only in `run`'s handler).
+  (onnxruntime), `artifacts.py` (verify/install/load), `cascade.py` (`Student`,
+  `System1First`, `apply_system1`; applied only in the `run` and `sentiment` handlers).
+  `sentiment` borrows the installed `polarity/classify` student
+  (`SentimentModule.system1_student`, handed over by `apply_system1` via `use_student`)
+  for **neutral segments only**; `gate` needs the pinned `NEUTRAL` calibration in
+  `core/sentiment.py` (its `artifact_id` and `SCORE_SIGNATURE_SHA256` must match), else
+  it shadows. It ships `None` until a lab calibration run pins one.
 - `distill/` — the campaign (depends on `system1`, never on `cascade`):
   `questions.py` (signature -> laya question + binds), `segment.py`, `splits.py`,
   `dataset.py` (the aiagent -> devai contract), `label.py` (teacher votes),
@@ -119,7 +124,8 @@ commit itself: no separate bump commit).
 - **Lazy dspy in the CLI.** `import aiagent.cli.app` must NOT import `dspy`, nor
   numpy, tokenizers, onnxruntime or httpx (subprocess tests enforce both);
   `cli/distill_cmd.py` imports `aiagent.distill.*` inside its handlers, and
-  `system1/cascade.py` is imported only inside `run`'s handler, never by `cli/app`.
+  `system1/cascade.py` is imported only inside the `run` and `sentiment` handlers (and
+  function-locally by `core/sentiment.py` once a student is in use), never by `cli/app`.
   `run/eval/optimize/chat` and the online half of
   `doctor`/`models` import dspy / `llm.lm` / `core.evaluate` / `data.loader` /
   `optimize.harness` **inside the function body**, never at module top. `_runtime.py`

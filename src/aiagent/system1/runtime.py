@@ -220,13 +220,23 @@ class System1Runtime:
         """prepare + tokenizer.encode with the artifact's limits."""
         return self._encode(state, prepare(questions))
 
-    def fits(self, state: State, questions: Mapping[str, Mapping[str, Any]]) -> bool:
-        """True iff the student sees the whole state for every question."""
+    def fits(
+        self,
+        state: State,
+        questions: Mapping[str, Mapping[str, Any]],
+        *,
+        n_tokens: int | None = None,
+    ) -> bool:
+        """True iff the student sees the whole state for every question.
+
+        `n_tokens`: len(tokenizer.state_ids(state)), when the caller has counted it.
+        """
         return self._tokenizer.fits(
             state,
             prepare(questions),
             max_len=self._config.max_len,
             head_max_len=self._config.head_max_len,
+            n_tokens=n_tokens,
         )
 
     def predict(

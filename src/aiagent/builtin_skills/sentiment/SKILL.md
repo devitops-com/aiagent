@@ -31,3 +31,8 @@ aiagent run sentiment --text "..."
 
 URLs are fetched through the devai egress proxy (pipelock); local files are read
 directly. Output is human-readable by default, or structured JSON with `--json`.
+
+**System 1** (`system1_mode.sentiment = "shadow" | "gate"`) borrows the installed
+`polarity` student for segments it calls neutral; gate needs a pinned calibration
+and shadows until one exists. Use gate only on document corpora that passed a
+sentiment shadow run; reviews stay off or shadow.
