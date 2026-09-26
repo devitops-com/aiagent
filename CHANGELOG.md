@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-26
+
 ### Added
 - **System 1 for `sentiment`, for neutral segments only.** `system1_mode.sentiment =
   "shadow" | "gate"` uses the installed `polarity` student: in gate mode a segment it
