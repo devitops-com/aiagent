@@ -32,13 +32,7 @@ from aiagent.distill.splits import document_id
 from aiagent.skills.base import Skill
 from aiagent.skills.loader import build_module
 from aiagent.skills.registry import load_registry
-from aiagent.system1.artifacts import (
-    SHADOW_LOG,
-    InstalledArtifact,
-    artifact_home,
-    install_artifact,
-    verify_artifact,
-)
+from aiagent.system1.artifacts import SHADOW_LOG, artifact_home
 from aiagent.system1.cascade import (
     REASONING_MARKER,
     System1First,
@@ -48,11 +42,10 @@ from aiagent.system1.cascade import (
 from aiagent.system1.contract import content_sha256
 from aiagent.system1.runtime import System1Runtime
 from aiagent.system1.sequence import SequenceTokenizer
-from system1_helpers import FIXTURE, FIXTURE_HEAD_MAX_LEN, FIXTURE_MAX_LEN, make_run_dir
+from system1_helpers import FIXTURE, FIXTURE_HEAD_MAX_LEN, FIXTURE_MAX_LEN, install
 
 runner = CliRunner()
 
-DATASET = "d" * 64
 TEXT = "Die Lieferung kam zu spät, aber der Support war hervorragend."
 LONG_TEXT = "word " * 200  # far more tokens than the fixture's max_len (128)
 CASCADE_LOGGER = "aiagent.system1.cascade"
@@ -107,41 +100,6 @@ def settings_for(
     if min_conf is not None:
         monkeypatch.setenv("AIAGENT_SYSTEM1_MIN_CONF", str(min_conf))
     return load_settings()
-
-
-def install(
-    settings: Settings,
-    skill: Skill,
-    *,
-    predictor: str = "classify",
-    signature: Any = Polarity,
-    tau: float = 0.0,
-    source: str | None = None,
-) -> InstalledArtifact:
-    """Install the fixture student for polarity/<predictor>, bound to `signature`."""
-    binds = derive(signature).binds(skill)
-    job = f"ftjob-{predictor}"
-    run_dir = make_run_dir(
-        settings.distill_dir, job, binds=binds.to_json(), dataset_manifest_sha256=DATASET
-    )
-    verified = verify_artifact(
-        run_dir,
-        expected=binds,
-        dataset_manifest_sha256=DATASET,
-        max_len=FIXTURE_MAX_LEN,
-        head_max_len=FIXTURE_HEAD_MAX_LEN,
-    )
-    return install_artifact(
-        run_dir,
-        files=verified.files,
-        artifacts_dir=settings.artifacts_dir,
-        skill=skill.name,
-        predictor=predictor,
-        run=job,
-        thresholds={"polarity": tau},
-        target_precision=0.95,
-        skill_source_sha256=source or binds.skill_source_sha256,
-    )
 
 
 def student_key(runtime: System1Runtime, text: str = TEXT) -> str:

@@ -348,9 +348,13 @@ class SequenceTokenizer:
         *,
         max_len: int,
         head_max_len: int,
+        n_tokens: int | None = None,
     ) -> bool:
-        """True iff no row truncates the state and every marker fits."""
-        n = len(self.state_ids(state))
+        """True iff no row truncates the state and every marker fits.
+
+        `n_tokens`: len(state_ids(state)), when the caller has already counted it.
+        """
+        n = len(self.state_ids(state)) if n_tokens is None else n_tokens
         for q in questions.values():
             head = self.prefix(q, head_max_len=head_max_len)
             room = max(0, max_len - len(head.input_ids) - 1)

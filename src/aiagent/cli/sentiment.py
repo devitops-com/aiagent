@@ -7,7 +7,9 @@ statistical significance, and a plain-language explanation, human-readable by
 default or as ``--json``.
 
 Module-top imports stay ``dspy``-free (dspy is pulled in lazily by
-``configure_lm``/``build_module``), preserving the fast-``--help`` invariant.
+``configure_lm``/``build_module``), preserving the fast-``--help`` invariant. System 1
+(``system1_mode.sentiment`` other than ``off``) is imported only when it is on, since
+it loads numpy and onnxruntime.
 """
 
 from __future__ import annotations
@@ -61,6 +63,10 @@ def sentiment(
     target = registry.get("sentiment")
     configure_lm(settings, model)
     module = build_module(target)
+    if settings.system1_mode.get(target.name, "off") != "off":
+        from aiagent.system1.cascade import apply_system1  # lazy: numpy, ORT
+
+        apply_system1(module, target, settings, registry)
 
     combined = "\n\n".join(doc.text for doc in docs)
     with verbosity_scope(verbose=verbose, skill="sentiment"):
@@ -104,6 +110,7 @@ def _emit(prediction: Any, docs: list[SourceDoc], as_json: bool) -> None:
                 "n_samples": prediction.n_samples,
                 "n_resampled": prediction.n_resampled,
                 "segments": prediction.segments,
+                "system1": prediction.system1,
                 "sources": origins,
                 "explanation": prediction.explanation,
             }
@@ -136,6 +143,22 @@ def _emit(prediction: Any, docs: list[SourceDoc], as_json: bool) -> None:
             f"95% CI       : [{prediction.ci95[0]:+.2f}, {prediction.ci95[1]:+.2f}] "
             "(normal approx)"
         )
+    if prediction.system1 is not None:
+        line = _system1_line(prediction.system1, prediction.n_segments)
+        typer.echo(f"system 1     : {line}")
     typer.echo(f"sources      : {', '.join(origins)}")
     typer.echo("")
     typer.echo(prediction.explanation)
+
+
+def _system1_line(block: dict[str, Any], n_segments: int) -> str:
+    """E.g. '18/24 segments by the student (gate, polarity a866e0a4), 1 too long'."""
+    taken = "by" if block["mode"] == "gate" else "would be by"
+    skill = block["student"].split("/")[0]
+    line = (
+        f"{block['accepted']}/{n_segments} segments {taken} the student "
+        f"({block['mode']}, {skill} {block['artifact_id'][:8]})"
+    )
+    if block["too_long"]:
+        line += f", {block['too_long']} too long"
+    return line

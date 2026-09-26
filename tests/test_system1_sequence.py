@@ -249,6 +249,9 @@ def test_a_state_of_exactly_room_tokens_is_kept_and_one_more_is_cut(tok: Sequenc
     row = tok.build(q, tok.state_ids(longer), **LIMITS, truncate_left=False)
     assert row.input_ids == (*head.input_ids, *word * room, tok.special.sep_id)
     assert not tok.fits(longer, {"p": q}, **LIMITS)
+    # a count the caller already has decides instead of the state's own
+    assert tok.fits(longer, {"p": q}, **LIMITS, n_tokens=room)
+    assert not tok.fits(exact, {"p": q}, **LIMITS, n_tokens=room + 1)
 
     left = tok.build(q, tok.state_ids(longer), **LIMITS, truncate_left=True)
     assert left.input_ids[-2] == tok.ids("service")[0]

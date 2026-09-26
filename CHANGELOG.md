@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **System 1 for `sentiment`, for neutral segments only.** `system1_mode.sentiment =
+  "shadow" | "gate"` uses the installed `polarity` student: in gate mode a segment it
+  calls neutral at τ or more gets no LLM call and scores a calibrated level, whose
+  measured spread enters the volatility and standard error. Gate needs a calibration
+  pinned for the installed student and the current `ScoreSegment`; none is pinned
+  yet, so gate runs as shadow, with a warning. Shadow scores every segment as off
+  mode does; both modes log one line per segment (no text) to
+  `system1/skills/sentiment/score/shadow.jsonl`. The JSON gains `segments[i].source`,
+  `segments[i].student` and a `system1` block; the human output a `system 1` line.
+  Off mode (the default) scores as before and never loads the student.
+
 ## [0.6.0] - 2026-09-26
 
 ### Changed

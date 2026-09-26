@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from aiagent.core.segment import split_segments
@@ -87,6 +89,70 @@ def test_scores_are_clamped_into_the_stats_via_polarity_bands() -> None:
 def test_summarize_rejects_empty_input() -> None:
     with pytest.raises(SourceError):
         summarize([])
+
+
+# --- the student term (System 1) --------------------------------------------
+
+
+def test_student_scores_count_for_the_mean() -> None:
+    stats = summarize([[4, 6], [-2]], student_scores=[0.5, 0.5], student_variance=1.0)
+    assert stats.n_segments == 4
+    assert stats.mean == pytest.approx((5 - 2 + 0.5 + 0.5) / 4)
+    assert stats.polarity == "neutral / mixed"
+
+
+def test_volatility_and_std_error_include_the_student_term() -> None:
+    sigma2 = 1.5  # the calibrated σ²(r) of a student segment
+    stats = summarize([[4, 6], [-2, -2]], student_scores=[0.5, 0.5], student_variance=sigma2)
+    scores = [5.0, -2.0, 0.5, 0.5]  # the segment means, student and LLM alike
+    mu = sum(scores) / 4
+    s2 = sum((x - mu) ** 2 for x in scores) / 3
+    volatility = math.sqrt(s2 + (2 / 4) * sigma2)  # + (n_student / n) σ²(r)
+    assert stats.volatility == pytest.approx(volatility)
+    assert stats.std_error == pytest.approx(volatility / math.sqrt(4))
+    assert stats.t_statistic == pytest.approx(mu / stats.std_error)
+    assert stats.ci_low == pytest.approx(mu - 1.959963984540054 * stats.std_error)
+    # The same scores without the term would claim more certainty than they have.
+    assert summarize([[5], [-2], [0.5], [0.5]]).std_error < stats.std_error
+
+
+def test_at_full_coverage_the_std_error_is_not_below_the_student_spread() -> None:
+    sigma2 = 0.81
+    stats = summarize([], student_scores=[0.4] * 9, student_variance=sigma2)
+    assert stats.mean == pytest.approx(0.4)
+    assert stats.std_error >= math.sqrt(sigma2) / math.sqrt(9) - 1e-12
+    assert stats.std_error == pytest.approx(0.9 / 3)  # not 0: every score is the same
+    assert stats.p_value is not None and stats.p_value > 0.0
+    assert (stats.n_samples, stats.n_resampled, stats.model_uncertainty) == (0, 0, None)
+
+
+def test_one_student_segment_alone_has_its_spread_but_no_test() -> None:
+    stats = summarize([], student_scores=[0.4], student_variance=0.25)
+    assert stats.std_error == pytest.approx(0.5)
+    assert stats.t_statistic is None and stats.p_value is None
+    assert stats.confidence == "insufficient-data"
+
+
+def test_model_uncertainty_ignores_the_student_segments() -> None:
+    stats = summarize([[1, 2, 3], [5]], student_scores=[0.0, 0.0], student_variance=4.0)
+    assert stats.model_uncertainty == pytest.approx(1.0)  # only [1, 2, 3] is resampled
+    assert stats.n_resampled == 1
+    assert stats.n_samples == 4  # LLM samples only
+    assert stats.n_segments == 4
+
+
+def test_model_uncertainty_is_none_at_one_sample_with_student_segments() -> None:
+    stats = summarize([[3], [-1]], student_scores=[0.0], student_variance=1.0)
+    assert (stats.model_uncertainty, stats.n_resampled, stats.n_samples) == (None, 0, 2)
+
+
+def test_the_student_variance_needs_student_segments() -> None:
+    assert summarize([[1], [3]], student_variance=5.0) == summarize([[1], [3]])
+
+
+def test_summarize_rejects_no_segments_at_all() -> None:
+    with pytest.raises(SourceError):
+        summarize([], student_scores=[], student_variance=1.0)
 
 
 # --- segmentation ---------------------------------------------------------

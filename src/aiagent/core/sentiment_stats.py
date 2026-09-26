@@ -5,9 +5,12 @@ times; a sample that did not parse is simply missing), this computes the overall
 sentiment plus the statistical properties the skill reports:
 
 * **volatility** — sample standard deviation of the per-segment mean scores; how
-  much sentiment swings *across the content*.
+  much sentiment swings *across the content*. A segment System 1 scored stands in
+  for an LLM mean with a calibrated residual variance σ²(r), so ``summarize`` adds
+  (n_student / n)·σ²(r) to the variance: without it, student scores would enter the
+  t-test as if they had no error.
 * **model_uncertainty** — the pooled within-segment standard deviation,
-  √(mean s²) over the segments with at least two samples; how much the model
+  √(mean s²) over the LLM segments with at least two samples; how much the model
   *disagrees with itself* on the same passage. ``None`` when no segment has two
   samples; ``n_resampled`` says how many segments it covers. Pooling variances,
   not averaging standard deviations, keeps it comparable across ``resample``
@@ -63,10 +66,6 @@ def _sample_variance(values: Sequence[float]) -> float:
         return 0.0
     mu = _mean(values)
     return math.fsum((v - mu) ** 2 for v in values) / (n - 1)
-
-
-def _sample_stdev(values: Sequence[float]) -> float:
-    return math.sqrt(_sample_variance(values))
 
 
 def _betacf(a: float, b: float, x: float) -> float:
@@ -149,16 +148,26 @@ def _confidence(p_value: float | None) -> str:
     return "not-significant"
 
 
-def summarize(segment_samples: Sequence[Sequence[float]]) -> SentimentStats:
-    """Summarize per-segment score samples into :class:`SentimentStats`."""
-    populated = [list(s) for s in segment_samples if s]
-    if not populated:
+def summarize(
+    llm_samples: Sequence[Sequence[float]],
+    student_scores: Sequence[float] = (),
+    student_variance: float = 0.0,
+) -> SentimentStats:
+    """Summarize per-segment scores into :class:`SentimentStats`.
+
+    ``llm_samples`` holds each LLM segment's samples and ``student_scores`` each
+    System 1 segment's score, one entry per segment position (a repeated segment
+    counts at each of its positions). ``student_variance`` is σ²(r), the calibrated
+    residual variance of a student score against an r-sample LLM mean.
+    """
+    populated = [list(s) for s in llm_samples if s]
+    segment_scores = [_mean(s) for s in populated] + list(student_scores)
+    if not segment_scores:
         raise SourceError("no sentiment samples to summarize")
 
-    segment_means = [_mean(s) for s in populated]
-    n = len(segment_means)
+    n = len(segment_scores)
     n_samples = sum(len(s) for s in populated)
-    mean = _mean(segment_means)
+    mean = _mean(segment_scores)
     resampled = [s for s in populated if len(s) >= 2]
     model_uncertainty = (
         math.sqrt(_mean([_sample_variance(s) for s in resampled]))
@@ -166,8 +175,9 @@ def summarize(segment_samples: Sequence[Sequence[float]]) -> SentimentStats:
         else None
     )
 
-    volatility = _sample_stdev(segment_means)
-    std_error = volatility / math.sqrt(n) if n >= 2 else 0.0
+    student_term = len(student_scores) / n * student_variance
+    volatility = math.sqrt(_sample_variance(segment_scores) + student_term)
+    std_error = volatility / math.sqrt(n)
 
     t_statistic: float | None
     p_value: float | None
