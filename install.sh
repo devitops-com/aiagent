@@ -10,15 +10,15 @@
 #
 # Environment:
 #   AIAGENT_PREFIX   install prefix (default ~/.local); honored by the installer
-#   AIAGENT_VERSION  release tag to install (default: latest), e.g. v0.1.0
+#   AIAGENT_VERSION  release tag to install (default: latest), e.g. v0.8.0
 #   TMPDIR           where the installer is downloaded and unpacked (default
 #                    /var/tmp, never /tmp: that is often a small RAM-backed tmpfs)
 #   AIAGENT_VERIFY   1: before running the downloaded installer, verify its GitHub
 #                    artifact attestation (the release workflow built it from this
 #                    repository) with `gh attestation verify`. Needs the GitHub CLI
 #                    (gh) on PATH, logged in. Any failure, or no gh, stops here: the
-#                    installer is not run. Default 0 (no check). Releases up to
-#                    v0.3.1 were built locally and have no attestation, so they fail it.
+#                    installer is not run. Default 0 (no check). Every published
+#                    release (v0.4.0 onward) was built and attested by GitHub Actions.
 #
 # Custom prefix, or verification, with the pipe form:
 #   curl -fsSL .../install.sh | sudo AIAGENT_PREFIX=/usr/local sh

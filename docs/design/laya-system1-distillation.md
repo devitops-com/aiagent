@@ -1,6 +1,9 @@
 # laya as aiagent's System 1: evaluation and distillation design
 
-**Status:** design. Owner decisions recorded 2026-09-24. Nothing is implemented yet.
+**Status:** design; owner decisions recorded 2026-09-24. Implemented: aiagent's part merged as #15
+(2026-09-25) and released in 0.5.0, and devai's trainer backend ran the pilot's jobs (2026-09-25).
+§13 records where the build departs from this design;
+[SYSTEM1_WALKTHROUGH.md](../SYSTEM1_WALKTHROUGH.md) records the campaign.
 **Scope:** aiagent (dataset building, CPU inference, cascade) and devai (GPU trainer backend, router
 changes, shared volume).
 **Sources:** laya v0.3.20 (commit `23a1752`, HF revision
@@ -537,9 +540,10 @@ The ship decision is **not** made in devai (§9).
 | 6 | Order of work | **onnxruntime and the runtime go into aiagent now**, shipped with the next release. |
 | 7 | Lab | **Rebuild the lab image** after that aiagent release. |
 
-**Delivery:** aiagent's part is implemented on branch `feat/system1-distill`. devai's part (§6) is
-proposed as a plan-only pull request to devai (`docs/plans/`), for a later devai session to
-implement.
+**Delivery:** aiagent's part was built on branch `feat/system1-distill`, merged as #15
+(2026-09-25) and released in 0.5.0. devai's part (§6), first proposed as a plan-only pull request
+to devai (`docs/plans/`), is built: its contract is devai's `docs/laya-trainer.md` (§13), and the
+lab images carry aiagent 0.8.0 since 2026-09-27.
 
 ## 12. Scope change in aiagent's CLAUDE.md (applied)
 

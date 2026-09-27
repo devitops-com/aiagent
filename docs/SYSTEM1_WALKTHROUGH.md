@@ -2,11 +2,13 @@
 
 **Status:** 2026-09-27. Phases 1-10 are **DONE**. Phase 10, the pre-registered confirmation run
 of owner decision D9, **passed** at τ 0.96 and level −0.02 (lab, 11:32-12:01 UTC), so run 1's
-calibration is pinned in `core/sentiment.py` (the follow-up PR to PR 3). Phase 11 is **NEXT**:
-the release, then the owner enables gate per document corpus, for corpora that passed the pass
-test. Phases 9-11 use PR 3 of the sentiment design (its §4): the calibration script, `--pin-tau`,
-the calibration's own τ and the model guard. PR 3 is merged (#23, 2026-09-27) but not released,
-and neither is the pin, so no aiagent release has them yet: use a checkout of `main`.
+calibration is pinned in `core/sentiment.py` (#24, the follow-up PR to PR 3). Phase 11's release
+is **DONE**: aiagent 0.8.0 (2026-09-27) ships PR 3 of the sentiment design (its §4: the
+calibration script, `--pin-tau`, the calibration's own τ and the model guard; #23) and the pin,
+and both devai lab images carry it since the same day. The rest of phase 11 is **NEXT**: the
+owner enables gate per document corpus, for corpora that passed the pass test; none is enabled
+yet. The calibration script (phases 9-10) is not in the bundle: run it from a checkout of
+`v0.8.0` or later.
 
 This is the record of the first System 1 campaign, end to end, as it ran in the devai lab: the
 `polarity` student (distilled, shipped, installed, shadowed) and the calibration that lets
@@ -78,7 +80,7 @@ The picture of the same flow, with devai's side, is
 | 8 | Calibration runs 1 and 2 | 2026-09-26 18:24-19:40 | DONE | 31 + 40 min, no failed row |
 | 9 | Analysis, owner decision D9 | 2026-09-26/27 | DONE | fails at the installed τ; τ 0.96 |
 | 10 | Confirmation run at τ 0.96, pin | 2026-09-27 11:32-12:01 | DONE | PASS: (a) 455/468, (b) p95 0.404; pinned |
-| 11 | Release, gate for documents | – | NEXT | gate is the owner's call, per corpus |
+| 11 | Release 0.8.0; gate for documents | 2026-09-27 (release) | release DONE; gate NEXT | 0.8.0 released, both lab images rebuilt with it; gate is the owner's call, per corpus; none enabled yet |
 
 ## 3. Prerequisites
 
@@ -111,8 +113,11 @@ The picture of the same flow, with devai's side, is
 | 0.5.2 (09-25) | `input_sha256` in polarity's shadow lines |
 | 0.6.0 (09-26) | real `sentiment` resamples (the cache fix), 4 calls in flight |
 | 0.7.0 (09-26) | `system1_mode.sentiment`, sentiment's shadow log |
+| 0.8.0 (09-27) | the pinned `sentiment` calibration (gate can run), the calibration's own τ, the model guard, `model` in sentiment's shadow lines |
 
-The sentiment runs used the lab image's own aiagent 0.7.0 (`/usr/local/bin/aiagent`). For
+The sentiment runs (phases 8 and 10) used the lab image's own aiagent 0.7.0
+(`/usr/local/bin/aiagent`). Both lab images carry 0.8.0 since 2026-09-27 (devai-lab-gpu
+`dd8ca2a74289`, devai-lab-cpu `1c0937be3752`), the first version whose sentiment gate can run. For
 another version, install a release by its tag, `v` included (`0.7.0` without it is a 404):
 
 ```bash
@@ -467,7 +472,7 @@ PY=$(head -1 "$(readlink -f "$(command -v aiagent)")" | sed 's/^#!//; s/ .*//')
 **System 1 for sentiment (0.7.0).** `system1_mode.sentiment` borrows the installed `polarity`
 student. In gate mode a segment the student calls `neutral` at confidence ≥ τ gets no LLM call and
 scores one calibrated level. 0.7.0 ships no calibration (`NEUTRAL = None`), so its gate runs as
-shadow, with a warning; the calibration was pinned after phase 10, not yet released (Status).
+shadow, with a warning; 0.8.0 ships the calibration pinned after phase 10 (section 13).
 Shadow logs one line per segment, without text, to
 `<artifacts_dir>/system1/skills/sentiment/score/shadow.jsonl`: the student's label, confidence and
 `would_accept` beside the LLM's samples.
@@ -582,10 +587,10 @@ Run 1 came to 0.547 s per call at 4 in flight, faster than the 0.592 s estimate.
 
 ## 12. Phase 9: the analysis and decision D9 (DONE, 2026-09-26/27)
 
-**The script** is `tools/system1/sentiment_calibration.py`, from PR 3 (merged, not yet released; see
-Status). It reads a sentiment shadow log and prints the level, the spread, per-segment coverage, the
-pass test, a τ sweep, slices by source and language, and the `NEUTRAL = NeutralCalibration(…)` block
-to pin. It runs on the host, from the repository root, with the dev venv (`make dev-install`).
+**The script** is `tools/system1/sentiment_calibration.py`, from PR 3 (#23, released in 0.8.0). It
+reads a sentiment shadow log and prints the level, the spread, per-segment coverage, the pass test,
+a τ sweep, slices by source and language, and the `NEUTRAL = NeutralCalibration(…)` block to pin.
+It runs on the host, from the repository root, with the dev venv (`make dev-install`).
 0.7.0's shadow lines carry no model, so `--model` names it:
 
 ```bash
@@ -799,14 +804,17 @@ NEUTRAL: NeutralCalibration | None = NeutralCalibration(
 `tests/test_sentiment_pin.py` holds the shipped values to the pre-registration's. Gate stays
 **off**: the pin makes it available, and nothing turns it on.
 
-## 14. Phase 11: the release, then gate for documents (NEXT)
+## 14. Phase 11: the release (DONE, 2026-09-27), then gate for documents (NEXT)
 
-- **Release** the pin (with PR 3) through `make release`.
-- **Then the owner enables gate,** per corpus, only for document corpora that passed the pass
-  test (D3), with the pinned student `a866e0a4…` installed and aiagent pinned to the teacher as
-  in section 3. The pinned calibration covers encyclopedic documents like the Wikipedia articles
-  it was measured and confirmed on (D7); another document corpus needs its own shadow run and
-  pass test first (sections 11-13):
+- **Released** as aiagent 0.8.0 (2026-09-27, `make release`; tag commit `6f34930`; the GitHub
+  release is immutable and attested): PR 3 (#23), the pin (#24) and the docs (#22). Both devai lab
+  images were rebuilt with it the same day (devai-lab-gpu `dd8ca2a74289`, devai-lab-cpu
+  `1c0937be3752`), where `aiagent version` prints `0.8.0`.
+- **Next, the owner enables gate,** per corpus, only for document corpora that passed the pass
+  test (D3), with aiagent 0.8.0 or later, the pinned student `a866e0a4…` installed and aiagent
+  pinned to the teacher as in section 3. No corpus is enabled yet. The pinned calibration covers
+  encyclopedic documents like the Wikipedia articles it was measured and confirmed on (D7);
+  another document corpus needs its own shadow run and pass test first (sections 11-13):
 
   ```toml
   [system1_mode]
@@ -830,7 +838,7 @@ which.
 | The first call of a phase takes 2-4.5 min | The teacher's vLLM cold start after a swap (119-124 s typical, 268 s the first time; 2 min 20-35 s from the end of each training job) | Warm it with one small call before a run; book the time in the GPU window. |
 | `503`, `Retry-After: 30`, `"code":"gpu_held_by_job"` | A training job holds the GPU; every other backend is refused until the job's record is final | Wait. The warm-up of `train --wait` and `status --wait` waits it out itself (5-minute deadline). A label run that meets it aborts once aiagent's 2 retries are used up, and a sentiment `--jsonl` run fails those rows: re-run the same command (or only the failed rows), and the DSPy cache replays every finished call. |
 | The teacher string or context changes; a second cold start after training | `CONTEXT` (injected by every lab launcher) or `AIAGENT_CONTEXT[_TOKENS]` overrides the `@118784` in the model | `unset` all three (section 3). Check `config show` prints `context_tokens = None`; `models list` does not show the override. |
-| A sentiment run on the wrong model; the teacher evicted | The lab's `default` alias is `qwen3.5:9b-q8_0` on Ollama, not the teacher | Pin `AIAGENT_API_BASE` and `AIAGENT_MODEL`; start runs through `pinned`; read the `[-v] skill=… model=` line. PR 3's model guard (merged, not yet released) makes gate shadow on another model. |
+| A sentiment run on the wrong model; the teacher evicted | The lab's `default` alias is `qwen3.5:9b-q8_0` on Ollama, not the teacher | Pin `AIAGENT_API_BASE` and `AIAGENT_MODEL`; start runs through `pinned`; read the `[-v] skill=… model=` line. The model guard (0.8.0) makes gate shadow on another model. |
 | `pgrep: command not found` | The lab image has no `pgrep` or `pkill` | List runs from `/proc`: `for p in /proc/[0-9]*; do tr '\0' ' ' 2>/dev/null <"$p/cmdline" \| grep -q 'aiagent run sentiment' && echo "${p#/proc/}"; done`, then `kill <pid>`. |
 | An `unreadable` count in the check, a document missing | A killed or interrupted process tore the shadow log's last line | The analysis leaves the line out and names it; rerun that document. When joining a log with its reruns, end each file with a newline first so the next one starts whole. |
 | A sentiment run 3× slower than planned | Another client shares the teacher's 4 slots, or a swap | Check `active_reqs` in the teacher's `/health`. One run at a time per lab. |
@@ -873,11 +881,12 @@ which.
   `sentiment/CORPUS.md` and `RUNBOOK.md` (runs 1 and 2), `sentiment/out/*.check` and `*.err`;
   `sentiment/confirm/CORPUS.md`, `PREREG.md` and `RUNBOOK-CONFIRM.md` (the confirmation run),
   `sentiment/out-confirm/confirm.check` and `*.err`.
-- **Analysis:** `tools/system1/sentiment_calibration.py` (PR 3, merged, not yet released) on
-  `sentiment/out/*-shadow.jsonl`; in `sentiment/confirm/analysis/`, the confirmation's sealed
-  output (`code.txt`, `confirm-all-shadow.jsonl`, `confirm-analysis.txt` and `.json`,
-  `confirm-validity.txt`, all in its `SHA256SUMS`), and `run1-pin.txt` and `.json`, which the
-  pin block wrote afterwards and are not sealed (sha256 `c3304af8…aaf9` and `d364c2ca…1ab8`).
+- **Analysis:** `tools/system1/sentiment_calibration.py` (PR 3, #23, released in 0.8.0; run from
+  a checkout) on `sentiment/out/*-shadow.jsonl`; in `sentiment/confirm/analysis/`, the
+  confirmation's sealed output (`code.txt`, `confirm-all-shadow.jsonl`, `confirm-analysis.txt`
+  and `.json`, `confirm-validity.txt`, all in its `SHA256SUMS`), and `run1-pin.txt` and `.json`,
+  which the pin block wrote afterwards and are not sealed (sha256 `c3304af8…aaf9` and
+  `d364c2ca…1ab8`).
 - **Not in a lab file:** devai's own observations of the GPU smoke test (the 14 s router swap, the
   2 min 5 s cold start, about 3.6 GiB of VRAM), the owner's `LAYA_MAX_HOLD_S` of 900 s (a devai
   setting), and two measurements made by hand during the pilot: the fp16 test (0 of 611 answers
