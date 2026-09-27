@@ -24,6 +24,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The sentiment shadow log records the model:** each line gains `model`, after
   `artifact_id`: the model string of the LM the score calls used, with its `@<ctx>`
   context window.
+- **Examples in every command's `--help`.** Each command and command group ends with a
+  few examples, and a test parses each one against its command's real options. The
+  user manual gains examples for every command, and `docs/SYSTEM1_WALKTHROUGH.md`
+  records the first System 1 campaign step by step: `polarity` labelled, trained,
+  evaluated, repaired, installed and shadowed, then the lab runs that calibrate
+  `sentiment` to use its student.
 
 ### Changed
 - **`sentiment`'s System 1 gate also needs the calibration's model.** A pinned
@@ -38,6 +44,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   at the higher of that and its own τ (the installed one, or `system1_min_conf`).
   The `system1` block's `tau` and `accepted` are the gate's; in shadow, and in the
   shadow log's `would_accept`, they stay the student's own.
+
+### Fixed
+- **Help texts that said the wrong thing.** The root summary lists what aiagent does
+  (run skills, sentiment, eval and optimize, distill) instead of "goal-reaching
+  loops"; `skills list` no longer claims to show each skill's model alias (only
+  `--json` has it); `run --input` takes a file holding a JSON object; `models list`
+  says its alias lines leave out a global `context_tokens`; `sentiment` says gate
+  runs as shadow until a calibration is pinned; `distill label` gives the ranges of
+  `--k` and `--temperature`, and `distill plan` the full qualification rule.
 
 ## [0.7.0] - 2026-09-26
 

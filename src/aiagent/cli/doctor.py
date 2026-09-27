@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import typer
 
-from aiagent.cli._common import get_settings, print_json
+from aiagent.cli._common import examples, get_settings, print_json
 from aiagent.exceptions import AiagentConfigError
 
 # Exit codes: 0 healthy, 1 unreachable, 2 config error.
@@ -22,17 +22,39 @@ _COLD_START_HINT = (
     "with AIAGENT_REQUEST_TIMEOUT_S (seconds) if a call appears to hang."
 )
 
+DOCTOR_EXAMPLES = examples(
+    ("Probe the router: GET /health and GET /v1/models", "aiagent doctor"),
+    (
+        "Check the configuration only, with no network (build or CI)",
+        "aiagent doctor --offline",
+    ),
+    (
+        "Fail fast when the router is down: 30 s per probe",
+        "aiagent doctor --timeout 30",
+    ),
+    (
+        "A report for scripts; the exit code says whether it is healthy",
+        "aiagent doctor --json",
+    ),
+)
+
 
 def doctor(
     offline: bool = typer.Option(
         False, "--offline", "-O", help="Skip all network; check config only."
     ),
     timeout: float | None = typer.Option(
-        None, "--timeout", help="Per-probe timeout in seconds (default: configured)."
+        None,
+        "--timeout",
+        help="Per-probe timeout in seconds (default: request_timeout_s).",
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    """Check configuration and (unless --offline) reach the devai router."""
+    """Check configuration and (unless --offline) reach the devai router.
+
+    Online it probes the router's /health and /v1/models and lists the models
+    it advertises. Exit 0 healthy, 1 unreachable or degraded, 2 config error.
+    """
     try:
         settings = get_settings()
     except AiagentConfigError as exc:

@@ -13,13 +13,28 @@ import shutil
 
 import typer
 
-from aiagent.cli._common import get_settings
+from aiagent.cli._common import examples, get_settings
+
+SHELL_EXAMPLES = examples(
+    ("A banner with the router and model, then your $SHELL", "aiagent shell"),
+    (
+        "Pin the model for everything run in that shell",
+        "aiagent shell --model qwen3.5:9b-q8_0",
+    ),
+)
 
 
 def shell(
-    model: str | None = typer.Option(None, "--model", help="Pin the model."),
+    model: str | None = typer.Option(
+        None, "--model", help="Pin the model (AIAGENT_MODEL in the new shell)."
+    ),
 ) -> None:
-    """Open a shell pre-configured for this devai agent session."""
+    """Open a shell pre-configured for this devai agent session.
+
+    Prints the router, the model and a few commands to try, then replaces itself
+    with $SHELL (else bash, else /bin/sh). devai's model picker runs it when you
+    pick aiagent.
+    """
     settings = get_settings()
     if model:
         os.environ["AIAGENT_MODEL"] = model

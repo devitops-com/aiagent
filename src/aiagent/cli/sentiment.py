@@ -19,7 +19,7 @@ from typing import Any
 
 import typer
 
-from aiagent.cli._common import get_settings, print_json
+from aiagent.cli._common import examples, get_settings, print_json
 from aiagent.cli._runtime import configure_lm
 from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
@@ -31,6 +31,30 @@ from aiagent.skills.registry import load_registry
 # dspy (importing core.sentiment would). Values are passed through to the module.
 _DEFAULT_RESAMPLE = 1
 _DEFAULT_MAX_SEGMENTS = 24
+
+SENTIMENT_EXAMPLES = examples(
+    (
+        "Score one text",
+        'aiagent sentiment --text "The rollout was flawless and the team is thrilled."',
+    ),
+    (
+        "A file and a web page together (fetched through the proxy), as JSON",
+        "aiagent sentiment -f report.pdf -u https://example.com/article --json",
+    ),
+    (
+        "Three samples per segment: also measures the model's uncertainty",
+        "aiagent sentiment --url https://example.com/article --resample 3",
+    ),
+    (
+        "A long document in at most 12 segments (merged, nothing dropped)",
+        "aiagent sentiment --file book.txt --max-segments 12",
+    ),
+    (
+        "System 1 shadow: polarity's student judges each segment, only logged",
+        "AIAGENT_SYSTEM1_MODE='{\"sentiment\":\"shadow\"}' "
+        "aiagent sentiment -f report.pdf",
+    ),
+)
 
 
 def sentiment(
@@ -50,12 +74,23 @@ def sentiment(
         help="LLM samples per segment; 2 or more measure model uncertainty.",
     ),
     max_segments: int = typer.Option(
-        _DEFAULT_MAX_SEGMENTS, "--max-segments", help="Cap on analyzed segments."
+        _DEFAULT_MAX_SEGMENTS,
+        "--max-segments",
+        help="Cap on analyzed segments; more are merged, never dropped.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
     verbose: int = VERBOSE_OPTION,
 ) -> None:
-    """Analyze sentiment of the given sources. Requires a reachable router."""
+    """Analyze sentiment of the given sources. Requires a reachable router.
+
+    Joins the sources into one text, splits it into segments and scores each on
+    -10 (very negative) to +10 (very positive), then reports the mean with its
+    volatility, significance and a plain-language explanation. Give at least one
+    --text, --file or --url; URLs are fetched through proxy_url. With
+    system1_mode.sentiment set, polarity's installed student judges each
+    segment and its verdict is logged (shadow). Gate needs a pinned
+    calibration, and this version has none, so gate runs as shadow.
+    """
     settings = get_settings()
     docs = _ingest(text, file, url, settings)
 

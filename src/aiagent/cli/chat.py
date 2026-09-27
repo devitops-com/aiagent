@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 import typer
 
-from aiagent.cli._common import get_settings
+from aiagent.cli._common import examples, get_settings
 from aiagent.cli._runtime import configure_lm
 from aiagent.cli.chat_session import ChatSession
 from aiagent.cli.repl import PromptReader
@@ -20,6 +20,15 @@ from aiagent.skills.registry import load_registry
 
 # REPL directives, offered by Tab completion and the fzf command palette.
 _COMMANDS = (":quit", ":q", ":reset", ":history", ":help")
+
+CHAT_EXAMPLES = examples(
+    ("Resume (or start) the session named default", "aiagent chat"),
+    ("A separate, named session", "aiagent chat --session research"),
+    (
+        "Start that session over, discarding its history",
+        "aiagent chat --session research --new",
+    ),
+)
 
 
 def chat(
@@ -34,7 +43,10 @@ def chat(
 ) -> None:
     """Ask questions and get answers, with resumable multi-turn history.
 
-    Requires a reachable router.
+    Requires a reachable router. Each session is saved in sessions_dir (default
+    ~/.config/aiagent/chat-sessions). In the loop, :quit (or Ctrl-D) exits,
+    :reset clears the session, and :history and :help pick a past prompt or a
+    directive with fzf.
     """
     import dspy
 

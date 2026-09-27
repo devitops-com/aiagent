@@ -1,10 +1,11 @@
 # aiagent User Manual
 
 A programmatic [DSPy](https://dspy.ai) agent framework focused on **query/prompt
-optimization, goal-reaching loops, and autonomous data processing** over local
-LLMs. It talks to any OpenAI-compatible router (the
-[devai](https://github.com/ksparavec/devai) `devai-router`) and ships as a single
-self-extracting, precompiled bundle that includes its own Python.
+optimization and autonomous data processing** over local LLMs: run skills, analyze
+sentiment, evaluate and optimize prompts, and distill System 1 students. It talks to
+any OpenAI-compatible router (the [devai](https://github.com/ksparavec/devai)
+`devai-router`) and ships as a single self-extracting, precompiled bundle that
+includes its own Python.
 
 aiagent is **not a chat UI** — basic chat is a minor convenience feature. The MVP
 demo is a self-optimizing expense extractor that lifts `{merchant, date, amount}`
@@ -27,7 +28,8 @@ implemented feature in detail.
   - [`config show` — inspect resolved settings](#config-show--inspect-resolved-settings)
   - [`models list` — aliases and advertised models](#models-list--aliases-and-advertised-models)
   - [`skills list` — discovered skills](#skills-list--discovered-skills)
-  - [`run` — run a skill once](#run--run-a-skill-once)
+  - [`run` — run a skill](#run--run-a-skill)
+  - [`sentiment` — analyze sentiment of data sources](#sentiment--analyze-sentiment-of-data-sources)
   - [`eval` — score a skill over a dev set](#eval--score-a-skill-over-a-dev-set)
   - [`optimize` — compile a skill](#optimize--compile-a-skill)
   - [`distill` — train a System 1 student](#distill--train-a-system-1-student)
@@ -47,6 +49,8 @@ implemented feature in detail.
 - [Packaging](#packaging)
 - [Releasing](#releasing)
 - [Deploying as a devai agent](#deploying-as-a-devai-agent)
+- [System 1 walkthrough](SYSTEM1_WALKTHROUGH.md) (a separate document): the first
+  teacher/student campaign, every step with its commands and output
 
 ---
 
@@ -96,7 +100,10 @@ Run `aiagent --help` for the top-level command list, or `aiagent <command>
 --help` for any single command. Commands that only inspect configuration or
 connectivity (`doctor`, `config`, `models`, `skills`, `version`, `--help`) never
 import DSPy, so they start instantly. The commands that run a model (`run`,
-`eval`, `optimize`, `chat`, `distill`) import DSPy lazily on first use.
+`sentiment`, `eval`, `optimize`, `chat`, `distill`) import DSPy lazily on first use.
+
+Each command section has an **Examples** block. The output samples show the layout;
+`<…>` marks a value that depends on the model, the data or the host.
 
 ### Global behavior
 
@@ -106,17 +113,31 @@ import DSPy, so they start instantly. The commands that run a model (`run`,
 - **`--json`** on any command that supports it emits a machine-readable object on
   stdout; all human progress/verbosity goes to stderr, so `--json` output stays
   clean for piping.
+- **`-h`** works wherever `--help` does.
+
+**Examples.**
+
+```bash
+aiagent --help                   # every command, one line each
+aiagent distill --help           # the subcommands of a group
+aiagent distill label -h         # one command's options and defaults
+aiagent run extract              # runtime error: "error: provide --text, --input or --jsonl"
+aiagent run extract --txt x      # a usage error (no such option): run's help, exit 2
+```
 
 ### `doctor` — check connectivity
 
 Pre-flight check. Online, it probes the router's `GET /health` and
 `GET /v1/models`; offline, it validates configuration only (no network).
 
+**Examples.**
+
 ```bash
-aiagent doctor                 # full check against the router
-aiagent doctor --offline       # config sanity only (build / CI, no router)
-aiagent doctor --timeout 30    # override per-probe timeout (seconds)
-aiagent doctor --json          # machine-readable report
+aiagent doctor                        # full check against the router
+aiagent doctor --offline              # config sanity only (build / CI, no router)
+aiagent doctor --timeout 30           # override per-probe timeout (seconds)
+aiagent doctor --json                 # machine-readable report
+aiagent doctor --offline --json       # config check for a script: exit 2 on a config error
 ```
 
 | Option | Description |
@@ -133,15 +154,72 @@ router is unreachable it prints a cold-start hint: devai's vLLM/SGLang backends
 are recreated on demand and the first request to a cold backend can take minutes —
 raise `AIAGENT_REQUEST_TIMEOUT_S` (seconds) if a call appears to hang.
 
+**Output.** Offline, and online where the router cannot be reached (exit 1; the hint is
+one long line, trimmed here):
+
+```text
+$ aiagent doctor --offline
+api_base : http://devai-router:11434/v1
+model    : (default alias: default)
+status   : ok (offline: config valid)
+
+$ aiagent doctor
+api_base : http://devai-router:11434/v1
+model    : (default alias: default)
+status   : unreachable
+error    : [Errno -2] Name or service not known
+hint     : devai's vLLM/SGLang backends (ports 11435/11436) are recreated on demand; …
+```
+
+A healthy router prints `status   : ok` and a `models   :` line with every advertised
+model id, comma-separated. `--json` adds the probed URLs and their HTTP status codes
+(`health`, `models_endpoint`).
+
 ### `config show` — inspect resolved settings
 
 Prints the fully resolved settings after applying the precedence chain (env → TOML
 → devai-env → defaults). The `api_key` is always masked.
 
+**Examples.**
+
 ```bash
-aiagent config show
-aiagent config show --json
+aiagent config show                                       # every setting, one per line
+aiagent config show --json                                # the same as JSON (null, true, {})
+AIAGENT_MODEL=qwen3.5:9b-q8_0 aiagent config show         # what an env override changes
+AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}' aiagent config show   # does a JSON value parse?
+CONTEXT=32768 aiagent config show                         # devai env: context_tokens = 32768
 ```
+
+**Output** with no config file and no `AIAGENT_*` set (home-directory paths shown as `~`;
+the text form prints Python values, `--json` gives `null`/`true`):
+
+```text
+api_base               = http://devai-router:11434/v1
+api_key                = ***
+artifacts_dir          = ~/.local/share/aiagent/artifacts
+cache                  = True
+context_tokens         = None
+default_alias          = default
+default_reasoning      = nothink
+distill_dir            = /laya
+max_bootstrapped_demos = 4
+max_labeled_demos      = 8
+max_rounds             = 1
+model                  =
+num_retries            = 2
+num_threads            = 4
+proxy_url              = http://devai-pipelock:8888
+registry_overrides     = {}
+request_timeout_s      = 900.0
+sessions_dir           = ~/.config/aiagent/chat-sessions
+skills_dir             = ~/.config/aiagent/skills
+system1_min_conf       = None
+system1_mode           = {}
+trainer_api_base       = http://devai-router:11438/v1
+```
+
+An invalid setting (an empty `AIAGENT_API_KEY`, a `num_threads` that is not a number) is a
+runtime error naming the field.
 
 ### `models list` — aliases and advertised models
 
@@ -149,21 +227,54 @@ Shows the registry aliases (each expanded to its composed model string) and, whe
 the router is reachable, the models it actually advertises. The registry default
 is a **placeholder** — use this command to confirm the real served tag.
 
+**Examples.**
+
 ```bash
-aiagent models list
-aiagent models list --json
+aiagent models list                                  # aliases, then what the router serves
+aiagent models list --json                           # {aliases, advertised, error}
+AIAGENT_MODEL=qwen3.5:9b-q8_0 aiagent models list    # default follows the configured model
+aiagent run polarity --model fast --text 'Works well.'   # use an alias from registry_overrides
 ```
+
+**Output** with the [TOML example](#toml-example) below (it defines `fast`) and no router in
+reach:
+
+```text
+Aliases:
+  default      -> openai/qwen3.5:9b-q8_0::nothink
+  fast         -> openai/qwen3.5:9b-q8_0::nothink@8192
+
+Router-advertised models:
+  (none — [Errno -2] Name or service not known)
+```
+
+An unreachable router is not an error here (exit 0); `doctor` is the check that fails. The
+alias lines leave out `context_tokens`: when it is set (for instance from `CONTEXT`), the
+commands that call a model append its `@<ctx>` instead, and `-v` prints the model string
+they actually use.
 
 ### `skills list` — discovered skills
 
-Lists discovered skills with their source, description, and preferred model alias.
-Manifests that fail to parse are skipped with a warning rather than aborting.
+Lists discovered skills with their source and description (`--json` adds each one's
+preferred model alias). Manifests that fail to parse are skipped with a warning rather than
+aborting.
+
+**Examples.**
 
 ```bash
 aiagent skills list                    # built-in + user
 aiagent skills list --source builtin   # built-in only
-aiagent skills list --source user      # user skills only
-aiagent skills list --json
+aiagent skills list --source user      # user skills only (~/.config/aiagent/skills)
+aiagent skills list --json             # with each skill's model alias and any skipped manifests
+```
+
+**Output** (the built-in skills; user skills follow with source `user`):
+
+```text
+chat           builtin  Basic resumable multi-turn Q&A against the configured model (a minor …
+extract        builtin  Self-optimizing extraction of {merchant, date, amount} from a free-text expense note.
+polarity       builtin  Label a passage's polarity as negative, neutral, mixed or positive (System …
+sentiment      builtin  Sentiment analysis of documents, articles, and web pages on a -10 to +10 …
 ```
 
 | Option | Description |
@@ -176,15 +287,19 @@ aiagent skills list --json
 Runs a skill on one input and prints its prediction, or on many inputs with
 `--jsonl`. Requires a reachable router.
 
+**Examples.**
+
 ```bash
-aiagent run extract --text "Lunch at Chipotle $12.50 on 3/4/2025"
-aiagent run extract --input inputs.json          # JSON object of named inputs
-aiagent run extract --text "..." --json          # JSON prediction
-aiagent run "extract expense fields" --route     # treat SKILL as free text
-aiagent run extract --text "..." --model default -v
-aiagent run polarity --jsonl texts.jsonl         # one JSON object per line, many inputs
-cat texts.jsonl | aiagent run polarity --jsonl - # the same, from stdin
+aiagent run extract --text 'Lunch at Chipotle $12.50 on 3/4/2025'   # one input ('…' keeps $12)
+aiagent run extract --input inputs.json --json            # named inputs from a JSON object
+aiagent run "extract expense fields" --route --text 'Taxi 23.40 USD'   # pick the skill from text
+aiagent run polarity --text 'Late, but it works.' --model default -v   # model string, time, calls
+aiagent run polarity --jsonl texts.jsonl > labels.jsonl   # many inputs: one line in, one out
+cat texts.jsonl | aiagent run polarity --jsonl - --concurrency 2   # from stdin, 2 at a time
 ```
+
+In a shell, quote a text that holds `$` with single quotes: in double quotes
+`"… $12.50 …"` becomes `"… 2.50 …"` before aiagent sees it.
 
 | Option | Description |
 |--------|-------------|
@@ -201,6 +316,38 @@ Provide exactly one of `--text`, `--input` or `--jsonl`. With `--route`, the pos
 argument is matched against skills by exact name first, then by keyword overlap
 over each skill's name + description (see [routing](#routing)).
 
+**Output.** One `field: value` line per output field, sorted by name (`reasoning` is there
+for a `ChainOfThought` skill such as `extract`); `--json` prints the same fields as one
+object:
+
+```text
+$ aiagent run extract --text 'Lunch at Chipotle $12.50 on 3/4/2025'
+amount: 12.5
+date: 2025-03-04
+merchant: Chipotle
+reasoning: <the model's reasoning>
+
+$ aiagent run polarity --text 'Late, but it works.' -v
+[-v] skill=polarity model=openai/qwen3.5:9b-q8_0::nothink
+[-v] elapsed=<seconds>s calls=1
+polarity: <negative | neutral | mixed | positive>
+```
+
+(The `[-v]` lines go to stderr.) With `--jsonl`, each input line is an object of named
+inputs, and each output line the prediction for the input on the same line:
+
+```text
+$ cat texts.jsonl
+{"text": "Arrived two weeks late."}
+{"text": "Setup took five minutes and it just works."}
+$ aiagent run polarity --jsonl texts.jsonl
+{"polarity": "<label>"}
+{"polarity": "<label>"}
+```
+
+A row that fails prints `{"error": "<type>: <message>"}` in its place, and stderr ends with
+`<n> of <m> inputs failed` (exit 1).
+
 ### `sentiment` — analyze sentiment of data sources
 
 Scores one or more data sources on a **−10** (very negative) … **+10** (very
@@ -208,18 +355,22 @@ positive) scale and reports statistical properties plus a plain-language
 explanation. Works out of the box — just supply the sources. Requires a
 reachable router.
 
+**Examples.**
+
 ```bash
-aiagent sentiment --text "The rollout was flawless and the team is thrilled."
-aiagent sentiment --file review.txt --file notes.md         # local files
-aiagent sentiment --url https://example.com/post --json     # fetched via proxy
-aiagent sentiment --file report.pdf --url https://... -t "extra note"  # mix + repeat
+aiagent sentiment --text 'The rollout was flawless and the team is thrilled.'   # one text
+aiagent sentiment --file review.txt --file notes.md          # local files, joined into one text
+aiagent sentiment --url https://example.com/article --json   # fetched via the proxy; full JSON
+aiagent sentiment -f report.pdf -u https://example.com/article -t 'extra note'   # mix + repeat
+aiagent sentiment --file report.pdf --resample 3             # measure model uncertainty too
+aiagent run sentiment --jsonl texts.jsonl > scores.jsonl     # many separate texts, one result each
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--text`, `-t <str>` | Raw text to analyze (repeatable). |
-| `--file`, `-f <path>` | Local file: `.txt`/`.md`/`.html`/`.pdf` (repeatable). |
-| `--url`, `-u <url>` | URL to fetch and analyze via the proxy (repeatable). |
+| `--file`, `-f <path>` | Local file (repeatable): `.pdf` and `.html`/`.htm`/`.xhtml` are converted to text, any other file (`.txt`, `.md`, …) is read as UTF-8 text. |
+| `--url`, `-u <url>` | `http`/`https` URL to fetch and analyze via the proxy (repeatable); the response's content type picks PDF, HTML or plain text. |
 | `--model <alias\|name>` | Model override. |
 | `--resample <n>` | LLM samples per segment (default 1). 2 or more measure model uncertainty; `--resample 3` takes about three times the LLM calls and time. |
 | `--max-segments <n>` | Cap on analyzed segments; content is merged, never dropped (default 24). |
@@ -337,17 +488,61 @@ URLs egress through the configured [`proxy_url`](#settings) (devai's pipelock);
 the skill is run-only, so `aiagent run sentiment --text "..."` also works for a
 single text blob.
 
+**Output.** The human form, here with the default `--resample 1` (so no uncertainty), for
+two sources:
+
+```text
+$ aiagent sentiment --file report.pdf --url https://example.com/article
+sentiment    : <-10.00..+10.00>  (<polarity>)
+volatility   : <sd>  (across <n> segments)
+uncertainty  : n/a (no segment has two readable scores)
+significance : p=<p> (<confidence>); t=<t>
+95% CI       : [<low>, <high>] (normal approx)
+sources      : report.pdf, https://example.com/article
+
+<a plain-language explanation of the score>
+```
+
+`<polarity>` is `very negative`, `negative`, `neutral / mixed`, `positive` or
+`very positive`; `<confidence>` is `high`, `moderate`, `low` or `not-significant`. A text of
+one segment has nothing to test: it prints `significance : insufficient-data` and no CI
+line. With `--resample 2` or more the uncertainty line reads
+`uncertainty  : <sd>  (model spread over <n> resampled segments)`, and with System 1 on a
+`system 1     : …` line follows the CI. `--json` has the keys `sentiment`, `polarity`,
+`volatility`, `model_uncertainty`, `std_error`, `t_statistic`, `significance_p`,
+`confidence`, `ci95`, `n_segments`, `n_samples`, `n_resampled`, `segments` (one per
+segment, in order: `score`, `rationale`, `source`, `student`; no text), `system1`,
+`sources` and `explanation`.
+
+**System 1 examples** (after a polarity student is installed; see
+[`distill`](#distill--train-a-system-1-student)):
+
+```bash
+# shadow: the LLM scores every segment, the student's verdicts go to the shadow log
+AIAGENT_SYSTEM1_MODE='{"sentiment":"shadow"}' aiagent sentiment --file report.pdf
+# a whole corpus in one process (the student loads once), results kept
+AIAGENT_SYSTEM1_MODE='{"sentiment":"shadow"}' aiagent run sentiment --jsonl corpus.jsonl >out.jsonl
+# gate: runs as shadow, with a warning, until a calibration is pinned for the student
+AIAGENT_SYSTEM1_MODE='{"sentiment":"gate"}' aiagent sentiment --file report.pdf --json
+```
+
+The [System 1 walkthrough](SYSTEM1_WALKTHROUGH.md) follows the first teacher/student campaign
+end to end, from labeling the `polarity` student to the sentiment calibration runs.
+
 ### `eval` — score a skill over a dev set
 
 Evaluates a skill across its dev set and reports the aggregate metric score.
 Optionally loads a compiled program first, so you can measure the lift from
 optimization.
 
+**Examples.**
+
 ```bash
-aiagent eval extract                                    # baseline
+aiagent eval extract                                    # baseline on the bundled dev set (8 rows)
 aiagent eval extract --compiled compiled/extract.json   # score a compiled program
 aiagent eval extract --devset my_dev.jsonl              # custom dev set
-aiagent eval extract --num-threads 8 --json
+aiagent eval extract --num-threads 8 --json             # 8 threads; {skill, score, n}
+aiagent eval extract --model qwen3.5:9b-q8_0 -v         # another served model; -v shows it
 ```
 
 | Option | Description |
@@ -361,17 +556,32 @@ aiagent eval extract --num-threads 8 --json
 
 Output reports the skill name, the number of examples `n`, and the `score`
 (fraction of fields correct, `0.00`–`1.00`). If the skill declares no dev set and
-none is passed, it errors.
+none is passed, it errors. Dev sets load with the expense row schema (`text`, `merchant`,
+`date`, `amount`; see [Datasets](#datasets-jsonl)), whichever skill is evaluated.
+
+```text
+$ aiagent eval extract
+skill : extract
+n     : 8
+score : <0.00-1.00>
+```
+
+DSPy also logs its own progress line to stderr
+(`INFO dspy.evaluate.evaluate: Average Metric: <sum> / 8 (<percent>%)`).
 
 ### `optimize` — compile a skill
 
 Compiles a skill against its metric using a DSPy prompt optimizer, optionally
 measuring before/after scores on a dev set and saving the compiled program.
 
+**Examples.**
+
 ```bash
-aiagent optimize extract --out compiled/extract.json                 # default: bootstrap
-aiagent optimize extract --optimizer mipro --out compiled/extract.json
-aiagent optimize extract --trainset my_train.jsonl --devset my_dev.jsonl
+aiagent optimize extract --out compiled/extract.json          # default: bootstrap
+aiagent optimize extract --optimizer mipro --out compiled/extract-mipro.json   # heavier search
+aiagent optimize extract --trainset my_train.jsonl --devset my_dev.jsonl       # your own data
+aiagent optimize extract --num-threads 8 -v                   # compile and score, save nothing
+aiagent eval extract --compiled compiled/extract.json         # then: reuse the saved program
 ```
 
 | Option | Description |
@@ -387,7 +597,21 @@ aiagent optimize extract --trainset my_train.jsonl --devset my_dev.jsonl
 When a dev set is available it prints the `baseline`, `after`, and `lift` scores;
 with `--out` it also prints the save path. Optimizer sizing (bootstrapped demos,
 labeled demos, rounds) is drawn from configuration — see
-[Configuration](#configuration) and [Optimizers](#optimizers).
+[Configuration](#configuration) and [Optimizers](#optimizers). Train and dev sets use the
+expense row schema, as for `eval`.
+
+```text
+$ aiagent optimize extract --out compiled/extract.json
+Bootstrapped <k> full traces after <n> examples for up to 1 rounds, amounting to <m> attempts.
+optimizer : bootstrap
+baseline  : <0.00-1.00>
+after     : <0.00-1.00>
+lift      : <+0.00>
+saved     : compiled/extract.json
+```
+
+The first line is DSPy's `BootstrapFewShot` report; `mipro` prints its own progress
+instead.
 
 ### `distill` — train a System 1 student
 
@@ -398,6 +622,8 @@ teacher: it labels real documents, devai's trainer fine-tunes the student on tho
 labels, and aiagent certifies the student on held-out rows before it may answer.
 devai's side (the trainer backend, its API and the file contract) is described in
 [devai's `docs/laya-trainer.md`](https://github.com/ksparavec/devai/blob/main/docs/laya-trainer.md).
+For the first real campaign, every step with its commands and output, see the
+[System 1 walkthrough](SYSTEM1_WALKTHROUGH.md).
 
 A predictor qualifies when it has exactly **one `str` input** and exactly **one
 output** besides `reasoning` with a closed answer set: `Literal[...]` of 2-10
@@ -405,6 +631,8 @@ strings, `bool`, or `int` with both bounds (`ge=`/`le=`) spanning 2-10 levels. T
 built-in `polarity` skill is the pilot. `aiagent distill plan SKILL` tells you why a
 predictor does not qualify (`extract`, for instance, has three outputs, two `str`
 and a `float`).
+
+**Examples:** one campaign, in order ([more per subcommand](#examples-by-subcommand)):
 
 ```bash
 aiagent distill plan polarity                                 # does it qualify? (no LLM)
@@ -563,16 +791,203 @@ input or a non-`str` input, and free-text or `float` outputs. A student shorter
 than the base's 1024 tokens (`label --max-len`), and int8/fp16 students. The
 cascade in commands other than `run` and `sentiment`.
 
+#### Examples by subcommand
+
+The ids are placeholders: `label` and `repair` print the dataset id (`ds-` and 12 hex
+digits), `train` the job id, which is also the run id (devai's job ids are longer).
+Paths under `artifacts_dir` are shown with `~`.
+
+**`plan`** reads only the skill's code: no LLM, no volume.
+
+```bash
+aiagent distill plan polarity                              # the pilot: qualifies, exit 0
+aiagent distill plan extract                               # the reasons it does not, exit 1
+aiagent distill plan sentiment --predictor score.predict   # one predictor, by its dotted name
+aiagent distill plan polarity --json                       # questions and hashes for a script
+```
+
+```text
+$ aiagent distill plan polarity
+skill     : polarity (builtin)
+predictor : classify
+  qualifies      : yes
+  derive_version : 1
+  input          : text
+  signature      : 19c40da89689
+  question set   : 525e19edf9d3
+  skill source   : 251d08756fb0
+  question polarity choice [negative, neutral, mixed, positive]
+    Overall sentiment polarity of the passage.
+held-out  : certifying 0.95 at α=0.05 needs ≥ 59 accepted held-out rows, all correct (…): label about 2,000-3,000 segments
+```
+
+The hashes are those of this version's `polarity` skill; `eval` and the cascade compare
+them with the ones a student was trained for. A predictor that does not qualify
+shows `qualifies      : no` and one `- <reason>` line per problem.
+
+**`label`** needs the teacher (the configured model, or `--teacher`) and the base
+checkpoint under `<distill_dir>/base/`; it writes `<distill_dir>/inbox/ds-…/`.
+
+```bash
+aiagent distill label polarity --jsonl corpus.jsonl --k 3         # one {"text": "…"} per line
+aiagent distill label polarity --dir corpus/ --file report.pdf    # a directory (recursive) + a file
+aiagent distill label polarity --jsonl corpus.jsonl -u https://example.com/article   # mix sources
+aiagent distill label polarity --jsonl corpus.jsonl --teacher qwen3.5:9b-q8_0 --concurrency 2
+aiagent distill label polarity --jsonl corpus.jsonl --k 3 --json > label.json   # id for a script
+```
+
+```text
+$ aiagent distill label polarity --jsonl corpus.jsonl --k 3
+labeled 25/<total>
+labeled 50/<total>
+…
+dataset   : ds-9f2c41d07a1b  (/laya/inbox/ds-9f2c41d07a1b)
+documents : <n> (<n> segments, <n> duplicates)
+rows      : train <n>, calib <n>, heldout <n>, pool <n>
+labels    : polarity: negative <n>, neutral <n>, mixed <n>, positive <n>
+failures  : none (unparseable teacher samples)
+unlabeled : 0 (no sample parsed; dropped)
+next      : aiagent distill train ds-9f2c41d07a1b
+```
+
+The `labeled` lines go to stderr every 25 segments; `<total>` counts the train, calib and
+held-out segments (pool rows stay unlabeled), each asked `k` times. A held-out under 300
+rows adds `warning: held-out has <n> rows; …` on stderr. A run that stops on an error
+resumes: run the same command again, and the samples already made come from DSPy's cache
+(`cache` on, the default); the new dataset has another id.
+
+**`train`** re-validates the dataset on the CPU, then starts the job at `trainer_api_base`.
+
+```bash
+aiagent distill train ds-9f2c41d07a1b                   # start the job and return
+aiagent distill train ds-9f2c41d07a1b --wait            # follow it, then warm the teacher back up
+aiagent distill train ds-9f2c41d07a1b --epochs 6 --lr-multiplier 0.5 --wait   # other settings
+aiagent distill train ds-9f2c41d07a1b --batch-size 16 --wait --no-warm-up     # no warm-up after
+```
+
+```text
+$ aiagent distill train ds-9f2c41d07a1b
+job       : ftjob-3f9e0c1b
+status    : validating_files
+dataset   : ds-9f2c41d07a1b
+next      : aiagent distill status ftjob-3f9e0c1b --wait
+```
+
+With `--wait` it polls every 30 s (one `ftjob-…: <status> (volume)` line per poll on
+stderr, `(api)` before the job is on the volume), then prints the `status` block below with
+`warm-up   : <teacher model string>` and `next      : aiagent distill eval ftjob-…`. A job
+that does not succeed ends with `error: job <id> <status>: <message>` (exit 1). Ctrl-C
+stops the following, not the job: `status --wait` picks it up again.
+
+**`status`** reads `runs/<job>/` on the volume first, the trainer API otherwise.
+
+```bash
+aiagent distill status ftjob-3f9e0c1b                          # one look
+aiagent distill status ftjob-3f9e0c1b --wait                   # follow it to the end (+ warm-up)
+aiagent distill status ftjob-3f9e0c1b --events 20              # the last 20 events
+aiagent distill status ftjob-3f9e0c1b --events 100 --json > status.json   # timings for the record
+```
+
+```text
+$ aiagent distill status ftjob-3f9e0c1b
+job       : ftjob-3f9e0c1b
+status    : <e.g. running, then succeeded, failed or cancelled>
+source    : volume
+model     : laya-multilingual
+dataset   : ds-9f2c41d07a1b
+student   : <the fine-tuned model name, once it succeeded>
+error     : -
+events    :
+  <UTC time> <level> <message>
+  …
+```
+
+**`eval`** runs on the CPU, with neither the teacher nor the trainer.
+
+```bash
+aiagent distill eval ftjob-3f9e0c1b                     # verify, score, decide
+aiagent distill eval ftjob-3f9e0c1b; echo "exit $?"     # 0 ship, 3 repair, 4 stop (not with set -e)
+aiagent distill eval ftjob-3f9e0c1b --json > eval.json  # the report, plus report_path and next
+aiagent distill eval ftjob-3f9e0c1b --target-precision 0.97 --fit-precision 0.99   # a stricter gate
+```
+
+```text
+$ aiagent distill eval ftjob-3f9e0c1b
+question polarity
+  n       : calib <n>, held-out <n>
+  accuracy: <acc>  ECE <ece>  Brier <brier>
+  coverage: @0.90 <c>, @0.95 <c>, @0.98 <c>
+  τ       : <τ | none> (fitted on calib at precision 0.98)
+  accepted: <n> (<n> correct): precision <p>, CP-lower <p>, coverage <c>
+  pass    : <yes | no>
+targets   : precision 0.95 (τ fitted at 0.98), α=0.05, min coverage 0.2, ε=0.01, max rounds 3
+round     : 0
+verdict   : <ship | repair | stop> — <reason>
+report    : ~/.local/share/aiagent/artifacts/system1/evals/ftjob-3f9e0c1b.json
+next      : aiagent distill install ftjob-3f9e0c1b
+```
+
+`coverage @…` is descriptive (measured on held-out itself); `accepted` and `CP-lower` are
+what the gate decides on. `next` names `repair` after a repair verdict and
+`none: the campaign stops here` after stop. Keep the same options in every round of a
+campaign.
+
+**`repair`** needs the teacher again (the one the dataset names).
+
+```bash
+aiagent distill repair ftjob-3f9e0c1b                       # the 256 least-sure pool rows
+aiagent distill repair ftjob-3f9e0c1b --max-rows 128 --concurrency 2
+aiagent distill repair ftjob-3f9e0c1b --json > repair.json  # the new dataset id for a script
+aiagent distill train ds-4be1d2c03f5a --wait                # then train the new round
+```
+
+```text
+$ aiagent distill repair ftjob-3f9e0c1b
+dataset   : ds-4be1d2c03f5a  (/laya/inbox/ds-4be1d2c03f5a)
+labeled   : <n> (<n> unlabeled)
+pool left : <n>
+next      : aiagent distill train ds-4be1d2c03f5a
+```
+
+**`install`** needs the run's ship report and `runs/<run>/` on the volume.
+
+```bash
+aiagent distill install ftjob-3f9e0c1b                  # copy, re-hash, make it current
+aiagent distill install ftjob-3f9e0c1b --json           # the same, with the enable hints as JSON
+AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}' aiagent run polarity --jsonl texts.jsonl  # shadow it
+AIAGENT_SYSTEM1_MODE='{"polarity":"gate"}' aiagent run polarity --jsonl texts.jsonl    # gate, later
+```
+
+```text
+$ aiagent distill install ftjob-3f9e0c1b
+installed : ~/.local/share/aiagent/artifacts/system1/skills/polarity/classify/<artifact_id>
+artifact  : <artifact_id>
+skill     : polarity/classify
+thresholds: polarity τ=<τ> (certified precision 0.95)
+enable    : AIAGENT_SYSTEM1_MODE='{"polarity":"shadow"}'
+            or in config.toml:
+              [system1_mode]
+              polarity = "shadow"
+            then "gate" once the shadow log (shadow.jsonl) agrees
+```
+
+Installing replaces an earlier student of the same predictor. With `system1_mode` back at
+`off` the student is not even loaded.
+
 ### `chat` — resumable multi-turn Q&A
 
 A basic conversational loop. Each answer is produced with prior turns as context,
 and the conversation is persisted to a named session so it can be resumed later.
 This is a minor convenience feature; aiagent is not a chat framework.
 
+**Examples.**
+
 ```bash
-aiagent chat                        # session "default"
-aiagent chat --session research     # a named, separately-persisted session
-aiagent chat --session research --new   # start fresh, discard that session's history
+aiagent chat                                  # session "default"
+aiagent chat --session research               # a named, separately-persisted session
+aiagent chat --session research --new         # start fresh, discard that session's history
+aiagent chat -s research --model qwen3.5:9b-q8_0   # resume it on another served model
+aiagent run chat --text 'What does DSPy compile?'  # one question, no history
 ```
 
 | Option | Description |
@@ -583,10 +998,23 @@ aiagent chat --session research --new   # start fresh, discard that session's hi
 | `--model <alias\|name>` | Model override. |
 
 In-loop commands: type `:quit` / `:q` to exit, `:reset` to clear the current
-session. `Ctrl-D` / `Ctrl-C` also exits. Sessions are stored under
-`~/.config/aiagent/chat-sessions/<name>.json` (see
+session, `:history` / `:h` to pick a past prompt and `:help` / `:?` to pick a command
+(both pickers need [fzf](https://github.com/junegunn/fzf) on `PATH`; the pick is put on
+the prompt line to edit before sending). `Ctrl-D` / `Ctrl-C` also exits. The prompt has
+line editing, Up/Down history, `Ctrl-R` search and Tab completion of the `:` commands; the
+prompts you send, from every session, are kept in `<sessions_dir>/history` (the last
+1,000). Sessions are stored under `~/.config/aiagent/chat-sessions/<name>.json` (see
 [Chat sessions on disk](#chat-sessions-on-disk)). For a single-shot question with
 no history, `aiagent run chat --text "..."` also works.
+
+```text
+$ aiagent chat --session research
+aiagent chat — type :quit to exit, :reset to clear, :history to search past prompts.
+(resumed session 'research': 4 turns)
+you> <your question>
+bot> <the answer>
+you> :quit
+```
 
 ### `shell` — devai agent entrypoint
 
@@ -594,17 +1022,43 @@ Prints a short banner (router URL + effective model + example commands) and exec
 an interactive shell with the environment already wired. This is the entrypoint
 the devai model-picker uses when you select **AI Agent**.
 
+**Examples.**
+
 ```bash
-aiagent shell
-aiagent shell --model <name>    # pin the model for the session
+aiagent shell                               # banner, then $SHELL with the settings in place
+aiagent shell --model qwen3.5:9b-q8_0       # pin the model: AIAGENT_MODEL for the whole shell
+SHELL=/bin/bash aiagent shell               # choose the shell
+AIAGENT_API_BASE=http://devai-router:11434/v1 AIAGENT_MODEL=qwen3.5:9b-q8_0 aiagent shell  # as the picker
+exit                                        # leave it (back to where you started)
 ```
 
 The shell is taken from `$SHELL` (falling back to `bash`, then `/bin/sh`).
 
+```text
+$ aiagent shell --model qwen3.5:9b-q8_0
+aiagent — devai agent shell
+  router : http://devai-router:11434/v1
+  model  : qwen3.5:9b-q8_0
+  try    : aiagent doctor
+           aiagent run extract --text '<note>'
+           aiagent eval extract
+           aiagent optimize extract --out compiled/extract.json
+           aiagent chat
+```
+
 ### `version`
 
+**Examples.**
+
 ```bash
-aiagent version     # prints the aiagent version string
+aiagent version                                  # prints the aiagent version string
+aiagent version | grep -qx 0.7.0 && echo ok      # check the installed version in a script
+aiagent version; command -v aiagent              # the version, and which aiagent runs
+```
+
+```text
+$ aiagent version
+0.7.0
 ```
 
 ---
@@ -724,8 +1178,8 @@ not enabled from the CLI.)
 
 ## Verbosity (`-v` / `-vv` / `-vvv`)
 
-`run`, `eval`, and `optimize` accept a repeatable `-v` flag. All verbosity output
-goes to **stderr**, so `--json`/stdout stays clean for scripting. Each level is
+`run`, `sentiment`, `eval`, and `optimize` accept a repeatable `-v` flag. All verbosity
+output goes to **stderr**, so `--json`/stdout stays clean for scripting. Each level is
 additive:
 
 | Level | Adds |
@@ -777,6 +1231,11 @@ Rows are validated against a pydantic model before use. Blank lines are skipped;
 malformed row fails fast with `path:line` context, and an all-empty or missing
 file is rejected (so an empty train/dev set surfaces clearly rather than as a
 confusing downstream error).
+
+`eval` and `optimize` load every train and dev set with this expense row model, whichever
+skill they run: a user skill's `trainset`/`devset` needs the same four keys (other keys
+are ignored). The `--jsonl` inputs of `run` and `distill label` are plain objects of
+named inputs, with no labels.
 
 ---
 

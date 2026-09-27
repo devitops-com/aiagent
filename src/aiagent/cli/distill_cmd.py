@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from aiagent.cli._common import CLI_CONTEXT_SETTINGS, echo_err, get_settings, print_json
+from aiagent.cli._common import (
+    CLI_CONTEXT_SETTINGS,
+    echo_err,
+    examples,
+    get_settings,
+    print_json,
+)
 from aiagent.config import Settings
 from aiagent.exceptions import DistillError
 
@@ -56,12 +62,44 @@ _ACCEPTED_AT_98 = 181
 _ACCEPTED_AT_97 = 361
 _CORPUS_SEGMENTS = "2,000-3,000"
 
+# Placeholder ids for the examples, shaped like the real ones.
+_DS = "ds-9f2c41d07a1b"
+_DS_NEXT = "ds-4be1d2c03f5a"
+_JOB = "ftjob-3f9e0c1b"
+
+_DISTILL_EXAMPLES = examples(
+    (
+        "A campaign: qualify, label, train, then let eval decide",
+        "aiagent distill plan polarity",
+        "aiagent distill label polarity --jsonl corpus.jsonl --k 3",
+        f"aiagent distill train {_DS} --wait",
+        f"aiagent distill eval {_JOB}",
+    ),
+    (
+        "eval exit 3, repair: label what the student is least sure of, train again",
+        f"aiagent distill repair {_JOB}",
+        f"aiagent distill train {_DS_NEXT} --wait",
+    ),
+    (
+        "eval exit 0, ship: install the student, then shadow it before gate mode",
+        f"aiagent distill install {_JOB}",
+        "AIAGENT_SYSTEM1_MODE='{\"polarity\":\"shadow\"}' "
+        'aiagent run polarity -t "Late."',
+    ),
+    ("Follow a job started without --wait", f"aiagent distill status {_JOB} --wait"),
+)
+
 distill_app = typer.Typer(
     name="distill",
     help=(
         "Distill a skill's typed predictor into a laya System 1 student "
-        "(label -> train -> eval -> install)."
+        "(label -> train -> eval -> install).\n\n"
+        "The skill's LLM is the teacher: it labels documents, devai's trainer "
+        "fine-tunes the student on them, and eval certifies the student on "
+        "held-out rows before it may answer. Datasets and runs live in "
+        "distill_dir (default /laya)."
     ),
+    epilog=_DISTILL_EXAMPLES,
     no_args_is_help=True,
     add_completion=False,
     context_settings=CLI_CONTEXT_SETTINGS,
@@ -122,7 +160,23 @@ def _emit_predictor(data: dict[str, Any]) -> None:
         typer.echo(f"    {question['instructions']}")
 
 
-@distill_app.command("plan")
+_PLAN_EXAMPLES = examples(
+    (
+        "Does polarity qualify? Its questions, hashes and held-out sizing",
+        "aiagent distill plan polarity",
+    ),
+    (
+        "One predictor, as JSON",
+        "aiagent distill plan polarity --predictor classify --json",
+    ),
+    (
+        "Why extract does not: three outputs, two of them free text",
+        "aiagent distill plan extract",
+    ),
+)
+
+
+@distill_app.command("plan", epilog=_PLAN_EXAMPLES)
 def plan_cmd(
     skill: str = typer.Argument(..., help="Skill name."),
     predictor: str | None = typer.Option(
@@ -130,7 +184,13 @@ def plan_cmd(
     ),
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Show which predictors of SKILL can be distilled, with questions and hashes."""
+    """Show which predictors of SKILL can be distilled, with questions and hashes.
+
+    A predictor qualifies with one str input and one output besides reasoning
+    with a closed answer set: a Literal of 2-10 strings, a bool, or an int
+    bounded to 2-10 levels.
+    No LLM call. Exit 1 when no predictor (or not the named one) qualifies.
+    """
     from aiagent.distill import campaign
     from aiagent.distill.gates import GateTargets, min_certifiable
 
@@ -213,7 +273,23 @@ def _emit_label(outcome: LabelOutcome, as_json: bool) -> None:
     _line("next", next_step)
 
 
-@distill_app.command("label")
+_LABEL_EXAMPLES = examples(
+    (
+        'A JSONL corpus, {"text": ...} per line, 3 teacher samples per segment',
+        "aiagent distill label polarity --jsonl corpus.jsonl --k 3",
+    ),
+    (
+        "A directory tree and a web page",
+        "aiagent distill label polarity -d reviews/ -u https://example.com/article",
+    ),
+    (
+        "Another teacher than the configured model",
+        "aiagent distill label polarity --jsonl corpus.jsonl --teacher qwen3.5:9b-q8_0",
+    ),
+)
+
+
+@distill_app.command("label", epilog=_LABEL_EXAMPLES)
 def label_cmd(
     skill: str = typer.Argument(..., help="Skill name."),
     predictor: str | None = typer.Option(
@@ -234,9 +310,13 @@ def label_cmd(
     teacher: str | None = typer.Option(
         None, "--teacher", help="Teacher model alias or name (default: configured)."
     ),
-    k: int = typer.Option(_DEFAULT_K, "--k", help="Teacher samples per segment."),
+    k: int = typer.Option(
+        _DEFAULT_K, "--k", help="Teacher samples per segment (1-32)."
+    ),
     temperature: float = typer.Option(
-        _DEFAULT_TEMPERATURE, "--temperature", help="Teacher sampling temperature."
+        _DEFAULT_TEMPERATURE,
+        "--temperature",
+        help="Teacher sampling temperature (above 0, at most 2).",
     ),
     concurrency: int = _CONCURRENCY_OPTION,
     base: str = typer.Option(
@@ -244,7 +324,12 @@ def label_cmd(
     ),
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Label documents with the teacher into a dataset in <distill_dir>/inbox/."""
+    """Label documents with the teacher into a dataset in <distill_dir>/inbox/.
+
+    Cuts the documents into segments the student sees whole, splits them by
+    document into train, calib, held-out and pool, and has the teacher answer
+    each segment outside the pool k times. Prints the dataset id to train.
+    """
     from aiagent.distill import campaign
     from aiagent.distill.label import LabelConfig
     from aiagent.distill.segment import Sources
@@ -326,21 +411,45 @@ def _follow(
         raise DistillError(f"job {view.job.id} {view.job.status}: {reason}")
 
 
-@distill_app.command("train")
+_TRAIN_EXAMPLES = examples(
+    (
+        "Train on a labeled dataset and follow the job to its end",
+        f"aiagent distill train {_DS} --wait",
+    ),
+    (
+        "Other hyperparameters; prints the job id and returns at once",
+        f"aiagent distill train {_DS} --epochs 6 --lr-multiplier 0.5",
+    ),
+    (
+        "Follow it, but leave the teacher cold afterwards",
+        f"aiagent distill train {_DS} --wait --no-warm-up",
+    ),
+)
+
+
+@distill_app.command("train", epilog=_TRAIN_EXAMPLES)
 def train_cmd(
     dataset: str = typer.Argument(..., help="Dataset id (ds-...) to train on."),
-    epochs: int = typer.Option(_DEFAULT_EPOCHS, "--epochs", min=1),
-    batch_size: int | None = typer.Option(
-        None, "--batch-size", min=1, help="Default: the trainer's own choice."
+    epochs: int = typer.Option(
+        _DEFAULT_EPOCHS, "--epochs", min=1, help="Training epochs."
     ),
-    lr_multiplier: float = typer.Option(_DEFAULT_LR_MULTIPLIER, "--lr-multiplier"),
+    batch_size: int | None = typer.Option(
+        None, "--batch-size", min=1, help="Batch size (default: the trainer's choice)."
+    ),
+    lr_multiplier: float = typer.Option(
+        _DEFAULT_LR_MULTIPLIER, "--lr-multiplier", help="Learning-rate multiplier."
+    ),
     wait: bool = typer.Option(False, "--wait", help="Follow the job until it ends."),
     no_warm_up: bool = typer.Option(
         False, "--no-warm-up", help="With --wait: do not warm the teacher up after."
     ),
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Re-validate DATASET and start a devai fine-tuning job on it."""
+    """Re-validate DATASET and start a devai fine-tuning job on it.
+
+    The job runs at trainer_api_base. --wait follows it to the end (exit 1
+    unless it succeeded), then warms the teacher up again.
+    """
     from aiagent.distill import campaign
 
     settings = get_settings()
@@ -369,7 +478,17 @@ def train_cmd(
     _line("next", f"aiagent distill status {job.id} --wait")
 
 
-@distill_app.command("status")
+_STATUS_EXAMPLES = examples(
+    ("The job's state and its last 5 events", f"aiagent distill status {_JOB}"),
+    (
+        "Follow it until it ends; exit 1 unless it succeeded",
+        f"aiagent distill status {_JOB} --wait",
+    ),
+    ("More events, as JSON", f"aiagent distill status {_JOB} --events 20 --json"),
+)
+
+
+@distill_app.command("status", epilog=_STATUS_EXAMPLES)
 def status_cmd(
     job: str = typer.Argument(..., help="Fine-tuning job id."),
     events: int = typer.Option(
@@ -381,7 +500,11 @@ def status_cmd(
     ),
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Show a fine-tuning job, from the distill volume if there, else the API."""
+    """Show a fine-tuning job, from the distill volume if there, else the API.
+
+    --wait polls until the job ends (exit 1 unless it succeeded), then warms
+    the teacher up again.
+    """
     from aiagent.distill import campaign
 
     settings = get_settings()
@@ -434,7 +557,23 @@ def _emit_report(report: EvalReport, path: Path, next_step: str | None) -> None:
     _line("next", next_step or "none: the campaign stops here")
 
 
-@distill_app.command("eval")
+_EVAL_EXAMPLES = examples(
+    (
+        "Verify, score and decide: exit 0 ship, 3 repair, 4 stop",
+        f"aiagent distill eval {_JOB}",
+    ),
+    (
+        "Certify a stricter precision, as JSON",
+        f"aiagent distill eval {_JOB} --target-precision 0.97 --json",
+    ),
+    (
+        "Accept a student that answers less of held-out, over up to 5 rounds",
+        f"aiagent distill eval {_JOB} --min-coverage 0.1 --max-rounds 5",
+    ),
+)
+
+
+@distill_app.command("eval", epilog=_EVAL_EXAMPLES)
 def eval_cmd(
     run: str = typer.Argument(..., help="Run (fine-tuning job) id under runs/."),
     target_precision: float = typer.Option(
@@ -447,7 +586,9 @@ def eval_cmd(
         "--fit-precision",
         help="Precision τ is fitted at on calib (>= the target).",
     ),
-    alpha: float = typer.Option(_DEFAULT_ALPHA, "--alpha", help="CP significance."),
+    alpha: float = typer.Option(
+        _DEFAULT_ALPHA, "--alpha", help="Significance of the Clopper-Pearson bound."
+    ),
     min_coverage: float = typer.Option(
         _DEFAULT_MIN_COVERAGE,
         "--min-coverage",
@@ -463,7 +604,12 @@ def eval_cmd(
     ),
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Verify RUN's student, score it, and decide: ship (0), repair (3) or stop (4)."""
+    """Verify RUN's student, score it, and decide: ship (0), repair (3) or stop (4).
+
+    Checks every file hash, the bind to the skill and laya's golden answers;
+    fits each question's threshold τ on calib, then certifies its precision on
+    held-out. The report goes under artifacts_dir.
+    """
     from aiagent.distill import campaign
     from aiagent.distill.gates import EXIT_CODES, GateTargets
 
@@ -495,7 +641,20 @@ def eval_cmd(
 # --------------------------------------------------------------------- repair, install
 
 
-@distill_app.command("repair")
+_REPAIR_EXAMPLES = examples(
+    (
+        "Label the 256 pool rows the student is least sure of",
+        f"aiagent distill repair {_JOB}",
+    ),
+    (
+        "A smaller top-up, then train the dataset it prints",
+        f"aiagent distill repair {_JOB} --max-rows 128",
+        f"aiagent distill train {_DS_NEXT} --wait",
+    ),
+)
+
+
+@distill_app.command("repair", epilog=_REPAIR_EXAMPLES)
 def repair_cmd(
     run: str = typer.Argument(..., help="Run id whose eval verdict is repair."),
     max_rows: int = typer.Option(
@@ -504,7 +663,11 @@ def repair_cmd(
     concurrency: int = _CONCURRENCY_OPTION,
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Label the pool rows RUN's student is least sure of into the next round."""
+    """Label the pool rows RUN's student is least sure of into the next round.
+
+    Needs a repair verdict from eval. The new dataset keeps calib and held-out;
+    train it next.
+    """
     from aiagent.distill import campaign
 
     outcome = campaign.repair(
@@ -540,12 +703,31 @@ def _enable_hints(installed: InstalledArtifact) -> tuple[str, str]:
     return env, toml
 
 
-@distill_app.command("install")
+_INSTALL_EXAMPLES = examples(
+    ("Install the student of a run eval shipped", f"aiagent distill install {_JOB}"),
+    (
+        "Where it went, its artifact id and thresholds, as JSON",
+        f"aiagent distill install {_JOB} --json",
+    ),
+    (
+        "Then shadow it on real traffic before gate mode",
+        "AIAGENT_SYSTEM1_MODE='{\"polarity\":\"shadow\"}' "
+        'aiagent run polarity -t "Late."',
+    ),
+)
+
+
+@distill_app.command("install", epilog=_INSTALL_EXAMPLES)
 def install_cmd(
     run: str = typer.Argument(..., help="Run id whose eval verdict is ship."),
     as_json: bool = _JSON_OPTION,
 ) -> None:
-    """Install RUN's student for its skill (needs a ship verdict from eval)."""
+    """Install RUN's student for its skill (needs a ship verdict from eval).
+
+    Copies it to artifacts_dir and prints how to switch it on: system1_mode
+    per skill, off (the default), shadow (logged only) or gate (answers when
+    sure).
+    """
     from aiagent.distill import campaign
 
     installed = campaign.install(run, settings=get_settings())

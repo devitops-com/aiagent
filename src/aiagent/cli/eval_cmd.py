@@ -6,26 +6,48 @@ from pathlib import Path
 
 import typer
 
-from aiagent.cli._common import get_settings, print_json
+from aiagent.cli._common import examples, get_settings, print_json
 from aiagent.cli._runtime import configure_lm
 from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
 from aiagent.skills.loader import build_metric, build_module, dataset_path
 from aiagent.skills.registry import load_registry
 
+EVAL_EXAMPLES = examples(
+    ("Baseline score on extract's bundled dev set", "aiagent eval extract"),
+    (
+        "Score a program saved by optimize --out",
+        "aiagent eval extract --compiled compiled/extract.json",
+    ),
+    (
+        "Your own dev set, 8 threads, as JSON",
+        "aiagent eval extract --devset my_dev.jsonl --num-threads 8 --json",
+    ),
+    ("The model, elapsed time and LLM call count on stderr", "aiagent eval extract -v"),
+)
+
 
 def eval_skill(
     skill: str = typer.Argument(..., help="Skill name."),
-    devset: Path | None = typer.Option(None, "--devset", help="Dev JSONL override."),
+    devset: Path | None = typer.Option(
+        None, "--devset", help="Dev JSONL (default: the skill's own devset)."
+    ),
     compiled: Path | None = typer.Option(
         None, "--compiled", help="Compiled program JSON to load before evaluating."
     ),
     model: str | None = typer.Option(None, "--model", help="Model override."),
-    num_threads: int | None = typer.Option(None, "--num-threads"),
+    num_threads: int | None = typer.Option(
+        None, "--num-threads", help="Parallel threads (default: num_threads)."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
     verbose: int = VERBOSE_OPTION,
 ) -> None:
-    """Evaluate a skill over its dev set. Requires a reachable router."""
+    """Evaluate a skill over its dev set. Requires a reachable router.
+
+    Prints the mean of the skill's metric over the dev set (for extract, the
+    share of fields right, 0.00-1.00). Dev rows are JSONL objects in extract's
+    shape: text, merchant, date and amount.
+    """
     from aiagent.core.evaluate import evaluate
     from aiagent.data.loader import load_expense_set
     from aiagent.optimize.harness import load_compiled
