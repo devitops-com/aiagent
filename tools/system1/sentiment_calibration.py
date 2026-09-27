@@ -7,18 +7,22 @@ SCALE_MAX of aiagent.core.sentiment_stats; Reasoning of aiagent.llm.registry). F
 repository root:
 
     .venv/bin/python tools/system1/sentiment_calibration.py LOG.jsonl \\
-        [--meta SIDECAR.jsonl] [--tau T ...] [--level L] [--model MODEL] \\
-        [--measured TEXT] [--json OUT.json]
+        [--meta SIDECAR.jsonl] [--tau T ...] [--pin-tau T] [--level L] \\
+        [--model MODEL] [--measured TEXT] [--json OUT.json]
 
 LOG is <artifacts_dir>/system1/skills/sentiment/score/shadow.jsonl of one student, from
 a shadow run at resample 3. --meta is a corpus sidecar, one JSON object per line keyed
 by "doc_sha256" (hex) or "doc_id" ("sha256:<hex>" of the text), with "source" and
-"lang". --tau replaces the default sweep (0.90 0.92 0.94 0.96 0.98). --level evaluates
-a given pin: (b) is computed at L, and nothing is offered to pin (D3: the review run at
-the document run's NEUTRAL.level). --model names the LM the run scored with, for lines
-without a model field (aiagent 0.7.0). --measured names the run in NEUTRAL (default: the
-log's name, time span and size). --json writes every number. Exit 0 when both pass tests
-pass at the installed τ, 1 if not, 2 on bad input.
+"lang". --tau replaces the default sweep (0.90 0.92 0.94 0.96 0.98). --pin-tau T
+calibrates and tests at T instead of the installed τ (D9: a calibration carries its own
+τ, which the gate applies on top of the student's), and only then is a block offered.
+--level evaluates a given pin: (b) is computed at L, and nothing is offered to pin (D3:
+the review run at the document run's NEUTRAL.level); with --pin-tau it is the
+confirmation run (D9), whose verdict ends the report. --model names the LM the run
+scored with, for lines without a model field (aiagent 0.7.0). --measured names the run
+in NEUTRAL (default: the log's name, time span and size). --json writes every number.
+Exit 0 when both pass tests pass at the τ tested (--pin-tau's, else the installed one),
+1 if not, 2 on bad input.
 
 **As implemented:**
 
@@ -31,8 +35,12 @@ pass at the installed τ, 1 if not, 2 on bad input.
   reported and left out (a re-run is answered from the cache: the same samples twice).
 - Per line: ȳ = the mean of the non-null llm_samples (extra rollouts included), k =
   their count. A line with k = 0 has no ȳ, and is reported.
-- Accepted: at the installed τ, would_accept; at a sweep τ', fits and student ==
-  "neutral" and confidence ≥ τ' (the logged confidence, rounded to 4 decimals).
+- Accepted: at the installed τ, would_accept; at a sweep τ' or --pin-tau's, fits and
+  student == "neutral" and confidence ≥ τ' (the logged confidence, rounded to 4
+  decimals; the gate compares the unrounded one).
+- The τ tested: --pin-tau's T when given, else the installed τ. The calibration, the
+  pass test, the slices, the verdict and the exit code are at that τ; the installed τ's
+  numbers stay in the JSON ("installed") and in the sweep table.
 - Over the accepted lines with a ȳ: LEVEL = mean ȳ_i over n lines; SE = sd(ȳ)/√n, the
   sample sd (n − 1); σ_w² = mean s_i², the sample variance of line i's samples, over
   those with k_i ≥ 2; σ_b² = max(0, var(ȳ) − σ_w²·mean(1/k_i)), var the sample
@@ -51,7 +59,7 @@ pass at the installed τ, 1 if not, 2 on bad input.
   with a position without a ȳ has no off-mode mean (off mode fails such a run): it is
   skipped, and counted. PASS with ≥ 100 documents and a 95th percentile of |Δ| ≤ 0.5,
   by nearest rank: the ⌈0.95·N⌉-th smallest |Δ|. The mean Δ is reported too, and
-  documents, p95 |Δ| and mean Δ per slice at the installed τ.
+  documents, p95 |Δ| and mean Δ per slice at the τ tested.
 - Model: NEUTRAL.model is the analysed lines' model without its "@<ctx>"
   (calibration_model: the context window does not change the scores, the rest of the
   string does); the lines left out above do not count. Analysed lines of several
@@ -62,8 +70,11 @@ pass at the installed τ, 1 if not, 2 on bad input.
   model string an LM reports, "<provider>/<model>::<think|nothink>[@<ctx>]", or the
   guard would never match it. The header, the JSON (lines.no_model) and the block say
   how many analysed lines took --model's.
-- The block pins round(LEVEL, 2), and se, σ_b and σ_w to 4 decimals (the JSON has
-  them unrounded too). `make check` skips tools/: run ruff and mypy on it by hand.
+- The block pins tau = T, round(LEVEL, 2), and se, σ_b and σ_w to 4 decimals (the JSON
+  has them unrounded too). Without --pin-tau there is no block: the log only brackets
+  the installed τ. With --pin-tau and --level (the confirmation run) there is none
+  either: the last line is "CONFIRMATION at τ T, level L: PASS" (or FAIL).
+- `make check` skips tools/: run ruff and mypy on it by hand.
 """
 
 from __future__ import annotations
@@ -103,6 +114,10 @@ NO_SIDECAR: Final = "(no sidecar)"
 NO_VALUE: Final = "(none)"
 MAX_LINE: Final = 88  # ruff's line length: the pasted block goes into src/
 NO_MODEL: Final = "no model (pass --model)"
+NO_TAU: Final = (
+    "no τ (pass --pin-tau T): a calibration pins the τ it was measured and tested at, "
+    "and the log only brackets the installed one"
+)
 FROM_LOG, FROM_OPTION, FROM_BOTH = "log", "--model", "log and --model"
 # compose_model_string's "<provider>/<model>::<reasoning>", once "@<ctx>" is dropped.
 _REASONING: Final = "|".join(get_args(Reasoning))
@@ -516,23 +531,27 @@ def analyse(runs: Sequence[Run], tau: float | None, level: float | None) -> Stat
     }
 
 
-def _slice(runs: Sequence[Run], level: float | None) -> Stats:
-    """Coverage, (a) and (b) of one slice at the installed τ, (b) at `level`."""
+def _slice(runs: Sequence[Run], tau: float | None, level: float | None) -> Stats:
+    """Coverage, (a) and (b) of one slice at `tau` (None: the installed τ), (b) at
+    `level`."""
     lines = [line for run in runs for line in run.lines]
-    moved = drift(runs, None, level)
+    moved = drift(runs, tau, level)
     keep = ("documents", "skipped", "mean_delta", "p95_abs_delta")
     return {
-        **coverage(lines, None),
-        "agreement": agreement(lines, None),
+        **coverage(lines, tau),
+        "agreement": agreement(lines, tau),
         "drift": {name: moved[name] for name in keep},
     }
 
 
 def slices(
-    runs: Sequence[Run], sidecar: Mapping[str, Mapping[str, str]], level: float | None
+    runs: Sequence[Run],
+    sidecar: Mapping[str, Mapping[str, str]],
+    tau: float | None,
+    level: float | None,
 ) -> Stats:
-    """Coverage, (a) and (b) at the installed τ, per source and per lang; (b) at the
-    installed analysis's pinned `level`."""
+    """Coverage, (a) and (b) at the τ tested (`tau`, None: the installed one), per
+    source and per lang; (b) at that analysis's pinned `level`."""
     result: Stats = {}
     for key in SLICE_KEYS:
         groups: dict[str, list[Run]] = {}
@@ -540,7 +559,8 @@ def slices(
             value = sidecar.get(run.doc_sha256, {}).get(key, NO_SIDECAR)
             groups.setdefault(value, []).append(run)
         result[key] = {
-            value: _slice(members, level) for value, members in sorted(groups.items())
+            value: _slice(members, tau, level)
+            for value, members in sorted(groups.items())
         }
     return result
 
@@ -562,28 +582,32 @@ def implied_tau(lines: Iterable[Line]) -> dict[str, float | None]:
 
 
 def neutral_calibration(
-    installed: Stats, artifact_id: str, model: str | None, measured: str
+    tested: Stats, artifact_id: str, model: str | None, measured: str
 ) -> tuple[Stats | None, str | None]:
-    """(NeutralCalibration's fields as pinned, None), or (None, why it cannot be)."""
+    """(NeutralCalibration's fields as pinned, None), or (None, why it cannot be), from
+    the analysis at the τ tested (`tested`, at the installed τ when its tau is None)."""
     fields = ("level", "se", "sigma_between", "sigma_within")
-    missing = [name for name in fields if installed[name] is None]
+    missing = [name for name in fields if tested[name] is None]
     if missing:
         return None, (
-            f"{', '.join(missing)} undefined over {installed['n']} accepted segments: "
+            f"{', '.join(missing)} undefined over {tested['n']} accepted segments: "
             "SE needs n ≥ 2, and σ_w an accepted segment with ≥ 2 LLM samples "
             "(shadow-run at --resample 3)"
         )
+    if tested["tau"] is None:
+        return None, NO_TAU
     if model is None:
         return None, NO_MODEL
     return {
         "artifact_id": artifact_id,
         "score_signature_sha256": SCORE_SIGNATURE_SHA256,
         "model": model,
-        "level": round(installed["level"], LEVEL_DECIMALS),
-        "se": round(installed["se"], PIN_DECIMALS),
-        "sigma_between": round(installed["sigma_between"], PIN_DECIMALS),
-        "sigma_within": round(installed["sigma_within"], PIN_DECIMALS),
-        "n": installed["n"],
+        "tau": tested["tau"],
+        "level": round(tested["level"], LEVEL_DECIMALS),
+        "se": round(tested["se"], PIN_DECIMALS),
+        "sigma_between": round(tested["sigma_between"], PIN_DECIMALS),
+        "sigma_within": round(tested["sigma_within"], PIN_DECIMALS),
+        "n": tested["n"],
         "measured": measured,
     }, None
 
@@ -598,11 +622,15 @@ def build_summary(
     measured: str | None,
     level: float | None,
     model: tuple[str | None, str | None],
+    pin_tau: float | None,
 ) -> Stats:
-    """Every number of the analysis, JSON-ready; `level` is a given pin for (b), and
-    `model` resolve_model's answer."""
+    """Every number of the analysis, JSON-ready; `level` is a given pin for (b), `model`
+    resolve_model's answer, and `pin_tau` the τ to calibrate and test at (None: the
+    installed one)."""
     analysed = runs.lines
     installed = analyse(runs.kept, None, level)
+    pinned = None if pin_tau is None else analyse(runs.kept, pin_tau, level)
+    tested = installed if pinned is None else pinned
     measured_given = measured is not None
     if measured is None:
         stamps = sorted(line.ts for line in analysed or lines)
@@ -614,14 +642,17 @@ def build_summary(
     pin: Stats | None
     cannot_pin: str | None
     if level is not None:
+        given = f"--level {level:g} was"
+        if pin_tau is not None:
+            given = f"--pin-tau {pin_tau:g} and --level {level:g} were"
         pin, cannot_pin = None, (
-            f"--level {level:g} was given: (b) evaluates that pin on this log, so this "
-            "log calibrates nothing"
+            f"{given} given: (b) evaluates that pin on this log, so this log "
+            "calibrates nothing"
         )
     else:
         artifact_id = lines[0].artifact_id
         pin, cannot_pin = neutral_calibration(
-            installed, artifact_id, pinned_model, measured
+            tested, artifact_id, pinned_model, measured
         )
     no_sample = [line for line in analysed if not line.samples]
     unmatched = None
@@ -650,12 +681,16 @@ def build_summary(
         },
         "installed_tau": implied_tau(analysed),
         "given_level": level,
+        "pin_tau": pin_tau,
+        "confirmation": pin_tau is not None and level is not None,
         "installed": installed,
+        "pinned": pinned,
+        "passes": tested["passes"],
         "sweep": [analyse(runs.kept, tau, level) for tau in sweep],
         "slices": (
             None
             if sidecar is None
-            else slices(runs.kept, sidecar, installed["drift"]["level"])
+            else slices(runs.kept, sidecar, pin_tau, tested["drift"]["level"])
         ),
         "documents_without_sidecar": unmatched,
         "neutral_calibration": pin,
@@ -722,6 +757,11 @@ def _header(summary: Stats) -> list[str]:
         f"τ implied by would_accept: above {_num(tau['above'])}, "
         f"at most {_num(tau['at_most'])}",
     ]
+    if summary["pin_tau"] is not None:
+        rows.append(
+            f"τ tested: {_tau_label(summary['pin_tau'])} (--pin-tau: fits, neutral, "
+            "confidence ≥ it); the sweep's first row is the installed τ"
+        )
     if lines["unreadable"]:
         numbers = ", ".join(map(str, lines["unreadable"]))
         rows.append(
@@ -767,22 +807,35 @@ def _given(level: float | None) -> str:
     return "" if level is None else f" at the given level {level:g}"
 
 
-def _installed(installed: Stats, level: float | None) -> list[str]:
-    cov, a, b = installed["coverage"], installed["agreement"], installed["drift"]
+def _at(tau: float | None) -> str:
+    """The τ an analysis is at, for a title: the installed one, or a given one."""
+    return "the installed τ" if tau is None else f"τ {_tau_label(tau)}"
+
+
+def _tested(summary: Stats) -> Stats:
+    """The analysis the calibration, the pass test and the verdict rest on: at
+    --pin-tau's τ when given, else at the installed one."""
+    tested: Stats = summary["pinned"] or summary["installed"]
+    return tested
+
+
+def _tested_section(tested: Stats, level: float | None) -> list[str]:
+    cov, a, b = tested["coverage"], tested["agreement"], tested["drift"]
+    at = _at(tested["tau"])
     return [
         "",
-        "Accepted neutral segments at the installed τ",
-        f"  LEVEL {_num(installed['level'])} over n = {installed['n']}, "
-        f"SE {_num(installed['se'])}",
-        f"  σ_w {_num(installed['sigma_within'])} (pooled over "
-        f"{installed['n_within']} segments with ≥ 2 LLM samples), "
-        f"σ_b {_num(installed['sigma_between'])} (var(ȳ) "
-        f"{_num(installed['var_means'])}, mean 1/k {_num(installed['mean_inv_k'])})",
+        f"Accepted neutral segments at {at}",
+        f"  LEVEL {_num(tested['level'])} over n = {tested['n']}, "
+        f"SE {_num(tested['se'])}",
+        f"  σ_w {_num(tested['sigma_within'])} (pooled over "
+        f"{tested['n_within']} segments with ≥ 2 LLM samples), "
+        f"σ_b {_num(tested['sigma_between'])} (var(ȳ) "
+        f"{_num(tested['var_means'])}, mean 1/k {_num(tested['mean_inv_k'])})",
         f"  coverage {cov['accepted']}/{cov['lines']} = {_pct(cov['coverage'])}, "
         f"too_long {cov['too_long']}/{cov['lines']} = {_pct(cov['too_long_share'])}",
         *_bins_table(cov["by_n_tokens"]),
         "",
-        "Pass test at the installed τ",
+        f"Pass test at {at}",
         f"  (a) band agreement: {_fraction(a)} in (-{BAND:g}, +{BAND:g}), CP lower "
         f"bound {a['bound']:.4f} (α = {ALPHA}, need ≥ {MIN_BOUND:.2f}): "
         f"{_verdict(a['passes'])}",
@@ -836,7 +889,8 @@ def _slices(summary: Stats) -> list[str]:
         width = max(len(value) for value in [key, *groups]) + 2
         lines = _table(table, (width, *SHARE_WIDTHS, 11, 8))
         unmatched = summary["documents_without_sidecar"]
-        level = summary["installed"]["drift"]["level"]
+        tested = _tested(summary)
+        level = tested["drift"]["level"]
         if summary["given_level"] is not None:
             at = _given(level)
         else:
@@ -844,8 +898,8 @@ def _slices(summary: Stats) -> list[str]:
             at = f" at this log's pinned level {pinned}"
         rows += [
             "",
-            f"Slices by {key} at the installed τ ({unmatched} documents without a "
-            f"sidecar line); (b){at}",
+            f"Slices by {key} at {_at(tested['tau'])} ({unmatched} documents without "
+            f"a sidecar line); (b){at}",
             lines[0],
         ]
         for line, s in zip(lines[1:], groups.values(), strict=True):
@@ -902,19 +956,19 @@ def paste_block(summary: Stats) -> list[str]:
     pin = summary["neutral_calibration"]
     if pin is None:
         return _comment(f"cannot pin: {summary['cannot_pin']}")
-    installed = summary["installed"]
-    a, b = installed["agreement"], installed["drift"]
-    rows = [] if installed["passes"] else _comment(
-        "NOT READY: the pass test fails at the installed τ; do not pin this."
+    tested = _tested(summary)
+    a, b, at = tested["agreement"], tested["drift"], _at(pin["tau"])
+    rows = [] if tested["passes"] else _comment(
+        f"NOT READY: the pass test fails at {at}; do not pin this."
     )
     rows += _comment(
         f"sentiment's System 1 calibration (design §2.9), measured: {pin['measured']}"
     )
     rows += _comment(
-        f"n = {pin['n']} accepted neutral segments. Pass test at the installed τ: "
+        f"n = {pin['n']} accepted neutral segments at {at}. Pass test at {at}: "
         f"(a) {_fraction(a)} in (-2, +2), CP lower bound {a['bound']:.4f}; (b) p95 "
         f"|Δ| {_num(b['p95_abs_delta'])} over {b['documents']} documents, mean Δ "
-        f"{_num(b['mean_delta'])}: {_verdict(installed['passes'])}."
+        f"{_num(b['mean_delta'])}: {_verdict(tested['passes'])}."
     )
     if summary["model_from"] != FROM_LOG:
         lines = summary["lines"]
@@ -939,6 +993,7 @@ def paste_block(summary: Stats) -> list[str]:
         *_keyword("artifact_id", pin["artifact_id"]),
         *_keyword("score_signature_sha256", pin["score_signature_sha256"]),
         *_keyword("model", pin["model"]),
+        f"    tau={pin['tau']!r},",
         f"    level={pin['level']!r},",
         f"    se={pin['se']!r},",
         f"    sigma_between={pin['sigma_between']!r},",
@@ -949,18 +1004,30 @@ def paste_block(summary: Stats) -> list[str]:
     ]
 
 
-def render(summary: Stats) -> str:
-    """The report: counts, the installed τ and its pass test, the sweep, the slices,
-    then the block to paste."""
-    return "\n".join([
-        *_header(summary),
-        *_installed(summary["installed"], summary["given_level"]),
-        *_sweep(summary),
-        *_slices(summary),
-        "",
+def _closing(summary: Stats) -> list[str]:
+    """The confirmation run's verdict, or else the block to paste."""
+    if summary["confirmation"]:
+        return [
+            f"CONFIRMATION at {_at(summary['pin_tau'])}, level "
+            f"{summary['given_level']:g}: {_verdict(summary['passes'])}"
+        ]
+    return [
         "Paste into src/aiagent/core/sentiment.py, in place of "
         "`NEUTRAL: NeutralCalibration | None = None`:",
         *paste_block(summary),
+    ]
+
+
+def render(summary: Stats) -> str:
+    """The report: counts, the τ tested and its pass test, the sweep, the slices, then
+    the block to paste (or the confirmation run's verdict)."""
+    return "\n".join([
+        *_header(summary),
+        *_tested_section(_tested(summary), summary["given_level"]),
+        *_sweep(summary),
+        *_slices(summary),
+        "",
+        *_closing(summary),
     ])
 
 
@@ -1010,6 +1077,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--meta", type=Path, help="doc_sha256|doc_id, source, lang")
     parser.add_argument("--tau", type=_tau, action="append", help=f"default: {sweep}")
     parser.add_argument(
+        "--pin-tau",
+        type=_tau,
+        help="calibrate and test at this τ (fits, neutral, confidence ≥ T) instead of "
+        "the installed one, and pin it as NEUTRAL.tau; with --level, the confirmation "
+        "run of that pin",
+    )
+    parser.add_argument(
         "--level",
         type=_level,
         help="compute (b) at this pinned NEUTRAL.level (e.g. the document run's, on "
@@ -1028,7 +1102,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """0 when the pass test passes at the installed τ, 1 when not, 2 on bad input."""
+    """0 when the pass test passes at the τ tested, 1 when not, 2 on bad input."""
     args = parse_args(argv)
     try:
         lines, unreadable = read_log(args.log)
@@ -1041,7 +1115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     sweep = tuple(args.tau) if args.tau else DEFAULT_SWEEP
     summary = build_summary(
         args.log, lines, unreadable, runs, sidecar, sweep, args.measured, args.level,
-        model,
+        model, args.pin_tau,
     )
     print(render(summary))
     if args.json_out is not None:
@@ -1051,7 +1125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except OSError as exc:
             print(f"error: cannot write {args.json_out}: {exc}", file=sys.stderr)
             return EXIT_INPUT
-    return EXIT_PASS if summary["installed"]["passes"] else EXIT_FAIL
+    return EXIT_PASS if summary["passes"] else EXIT_FAIL
 
 
 if __name__ == "__main__":

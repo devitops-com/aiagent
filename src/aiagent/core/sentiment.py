@@ -24,10 +24,11 @@ many ``forward`` calls run at once (``run --jsonl``).
 student (:attr:`SentimentModule.system1_student`); ``apply_system1`` hands it over
 through :meth:`SentimentModule.use_student`. The student decides each distinct
 segment in order, and the segment's LLM samples go to the pool as soon as it is
-decided. In ``gate`` mode a segment the student calls ``neutral`` at τ or more is
-scored :data:`NEUTRAL`'s calibrated level, with no LLM call; every other segment is
-scored as in off mode. ``shadow`` scores everything as off mode does. Both log one
-line per segment (no text). Gate needs :data:`NEUTRAL` measured for this student, this
+decided. In ``gate`` mode a segment the student calls ``neutral`` at the higher of its
+τ and :data:`NEUTRAL`'s own τ or more is scored :data:`NEUTRAL`'s calibrated level, with
+no LLM call; every other segment is scored as in off mode. ``shadow`` scores everything
+as off mode does. Both log one line per segment (no text), whose ``would_accept`` is the
+student's call at its own τ. Gate needs :data:`NEUTRAL` measured for this student, this
 ``ScoreSegment`` and the model the score calls use; otherwise it only shadows.
 
 The heavy lifting (segmentation, statistics) lives in pure, dspy-free modules
@@ -102,23 +103,32 @@ class NeutralCalibration:
     """What a segment the student calls neutral scores, from a sentiment shadow run.
 
     ``level`` is the mean LLM score of the segments the neutral-only gate would have
-    taken, with its standard error ``se`` over ``n`` segments. ``sigma_between`` and
-    ``sigma_within`` split the spread of those segments' LLM means around it (σ_b, and
-    σ_w of one sample), so a student score stands in for an r-sample LLM mean with
-    :meth:`variance`. It holds for the student ``artifact_id``, the ``ScoreSegment``
-    hashed in ``score_signature_sha256`` and the LM ``model`` (as
-    :func:`calibration_model` names it) only; ``measured`` names the run.
+    taken at ``tau``, with its standard error ``se`` over ``n`` segments.
+    ``sigma_between`` and ``sigma_within`` split the spread of those segments' LLM means
+    around it (σ_b, and σ_w of one sample), so a student score stands in for an r-sample
+    LLM mean with :meth:`variance`. It holds for the student ``artifact_id``, the
+    ``ScoreSegment`` hashed in ``score_signature_sha256`` and the LM ``model`` (as
+    :func:`calibration_model` names it) only, and for segments at ``tau`` or more: the
+    acceptance threshold it was measured and tested at, which the gate applies on top of
+    the student's own τ. ``measured`` names the run.
     """
 
     artifact_id: str
     score_signature_sha256: str
     model: str
+    tau: float
     level: float
     se: float
     sigma_between: float
     sigma_within: float
     n: int
     measured: str
+
+    def __post_init__(self) -> None:
+        if not 0 < self.tau <= 1:  # also rejects nan
+            raise ValueError(
+                f"NeutralCalibration.tau must be in (0, 1], got {self.tau!r}"
+            )
 
     def variance(self, resample: int) -> float:
         """σ²(r) = σ_b² + σ_w²/r: a student score against an r-sample LLM mean."""
@@ -178,7 +188,8 @@ def _sha256(text: str) -> str:
 
 
 def _would_accept(verdict: Verdict | None) -> bool:
-    """The neutral-only gate's call on one verdict: whole, neutral, at τ or more."""
+    """The neutral-only call at the student's τ: whole, neutral, at τ or more (the
+    shadow log's would_accept, whatever the calibration)."""
     return (
         verdict is not None and verdict.clears_tau and verdict.label == NEUTRAL_LABEL
     )
@@ -193,12 +204,27 @@ class _System1:
     shadow_log: Path
     neutral: NeutralCalibration | None  # set iff the gate may score segments
 
+    @property
+    def tau(self) -> float:
+        """The confidence a neutral answer needs: the student's τ, and in a calibrated
+        gate the higher of that and the calibration's."""
+        if self.neutral is None:
+            return self.student.tau
+        return max(self.student.tau, self.neutral.tau)
+
     def consult(self, segment: str) -> Verdict | None:
         return self.student.consult(self.student.state(segment))
 
+    def accepts(self, verdict: Verdict | None) -> bool:
+        """Whole, neutral, at :attr:`tau` or more: taken in gate, would be in shadow."""
+        confidence = None if verdict is None else verdict.answer_confidence
+        return (
+            _would_accept(verdict) and confidence is not None and confidence >= self.tau
+        )
+
     def takes(self, verdict: Verdict | None) -> bool:
         """True when the student scores this segment in place of the LLM."""
-        return self.neutral is not None and _would_accept(verdict)
+        return self.neutral is not None and self.accepts(verdict)
 
 
 class SentimentModule(Pipeline):
@@ -486,11 +512,12 @@ def _student_answer(verdict: Verdict | None) -> dict[str, Any] | None:
 def _system1_block(
     system1: _System1 | None, segments: list[str], verdicts: dict[str, Verdict | None]
 ) -> dict[str, Any] | None:
-    """The output's ``system1`` summary; None when no student gave a verdict."""
+    """The output's ``system1`` summary; None when no student gave a verdict. Its
+    ``tau`` and ``accepted`` are the gate's (gate) or the student's alone (shadow)."""
     if system1 is None or all(verdicts[s] is None for s in segments):
         return None
     installed = system1.student.installed
-    accepted = sum(_would_accept(verdicts[s]) for s in segments)
+    accepted = sum(system1.accepts(verdicts[s]) for s in segments)
     too_long = sum(
         1 for s in segments if (verdict := verdicts[s]) is not None and not verdict.fits
     )
@@ -498,7 +525,7 @@ def _system1_block(
         "mode": system1.mode,
         "student": f"{installed.skill}/{installed.predictor}",
         "artifact_id": installed.artifact_id,
-        "tau": round(system1.student.tau, _DECIMALS),
+        "tau": round(system1.tau, _DECIMALS),
         "accepted": accepted,
         "too_long": too_long,
         "coverage": round(accepted / len(segments), 3),

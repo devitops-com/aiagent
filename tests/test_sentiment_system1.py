@@ -10,7 +10,9 @@ Per-segment LLM answers use DummyLM's dict mode, as in test_sentiment.py: the ex
 answer comes first, under a field header only the explain prompt carries, and no segment
 text is a substring of another. Unless a test says otherwise, ``NEUTRAL`` is pinned to
 the fixture's ``artifact_id``, the current ``ScoreSegment`` hash and DummyLM's model, which
-is what the LM in effect reports (``lm_for`` makes one that reports another).
+is what the LM in effect reports (``lm_for`` makes one that reports another), at the τ
+CALIBRATION_TAU: a top label of four is at least 0.25 confident, so the calibration's τ
+takes no segment away unless a test says so.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -77,7 +80,10 @@ SCORES = {
 }
 ORDER = [NEUTRAL[0], OTHER[0], NEUTRAL[1], OTHER[1], NEUTRAL[2]]  # student, LLM, ...
 TEXT = "\n\n".join(ORDER)  # paragraphs: one segment each
-CALIBRATION = {"level": 0.4, "se": 0.05, "sigma_between": 0.6, "sigma_within": 1.2}
+CALIBRATION_TAU = 0.25
+CALIBRATION = {
+    "tau": CALIBRATION_TAU, "level": 0.4, "se": 0.05, "sigma_between": 0.6, "sigma_within": 1.2
+}
 LABELS = ("negative", "neutral", "mixed", "positive")
 FIELDS = [
     "ts", "artifact_id", "model", "run_id", "seg_index", "n_segments", "doc_sha256", "input_sha256",
@@ -170,6 +176,9 @@ def test_the_fixture_texts_get_the_labels_the_tests_rely_on(runtime: System1Runt
     questions = derive(Polarity).questions()
     assert [student_answer(runtime, t).key for t in NEUTRAL] == ["neutral"] * 3
     assert all(student_answer(runtime, t).key != "neutral" for t in OTHER)
+    # The τ tests put their thresholds between the neutral texts' confidences.
+    first, second, third = (student_answer(runtime, t).answer_confidence for t in NEUTRAL)
+    assert CALIBRATION_TAU < first < 0.32 < 0.33 < third < 0.38 < 0.4 < second
     assert not runtime.fits({"text": LONG}, questions)
     assert all(a not in b for a in SCORES for b in SCORES if a != b)
 
@@ -264,6 +273,24 @@ def test_the_student_variance_stands_in_for_an_r_sample_mean() -> None:
     assert calibration.variance(3) == pytest.approx(0.6**2 + 1.2**2 / 3)
 
 
+def calibration_at(tau: float) -> NeutralCalibration:
+    fields = {**CALIBRATION, "tau": tau}
+    return NeutralCalibration(
+        artifact_id="a", score_signature_sha256="h", model="m", n=10, measured="m", **fields
+    )
+
+
+@pytest.mark.parametrize("tau", [1e-9, 0.96, 1.0])
+def test_a_calibration_carries_the_tau_it_was_measured_at(tau: float) -> None:
+    assert calibration_at(tau).tau == tau
+
+
+@pytest.mark.parametrize("tau", [0.0, -0.5, 1.0001, math.inf, math.nan])
+def test_a_calibration_tau_must_be_in_the_unit_interval(tau: float) -> None:
+    with pytest.raises(ValueError, match=r"NeutralCalibration\.tau must be in \(0, 1\]"):
+        calibration_at(tau)
+
+
 # --------------------------------------------------------------------------- gate
 
 
@@ -311,7 +338,7 @@ def test_gate_scores_the_neutral_segments_with_the_student(
         "mode": "gate",
         "student": "polarity/classify",
         "artifact_id": installed.artifact_id,
-        "tau": 0.0,
+        "tau": CALIBRATION_TAU,  # the higher of the installed τ 0 and the calibration's
         "accepted": 3,
         "too_long": 0,
         "coverage": 0.6,
@@ -384,6 +411,84 @@ def test_a_segment_the_student_cannot_see_whole_goes_to_the_llm(
     assert (long_line["student"], long_line["confidence"]) == (None, None)
     assert long_line["would_accept"] is False
     assert long_line["llm_samples"] == [2.0]
+
+
+@pytest.mark.parametrize(
+    ("installed_tau", "min_conf", "calibration_tau", "used", "taken"),
+    [
+        (0.0, None, 0.33, 0.33, (NEUTRAL[1], NEUTRAL[2])),
+        (0.4, None, 0.32, 0.4, (NEUTRAL[1],)),
+        (0.0, 0.38, 0.32, 0.38, (NEUTRAL[1],)),
+        (0.0, 0.32, 0.4, 0.4, (NEUTRAL[1],)),
+    ],
+    ids=[
+        "calibration-above-installed",
+        "installed-above-calibration",
+        "min-conf-above-calibration",
+        "min-conf-below-calibration",
+    ],
+)
+def test_gate_takes_a_neutral_segment_at_the_higher_of_the_two_taus(
+    installed_tau: float,
+    min_conf: float | None,
+    calibration_tau: float,
+    used: float,
+    taken: tuple[str, ...],
+    polarity: Skill,
+    registry: SkillRegistry,
+    runtime: System1Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The student's τ (installed, or system1_min_conf when set) and the calibration's own:
+    a segment below either goes to the LLM. The shadow log keeps the student's own call, and
+    the system1 block names the τ the gate used."""
+    settings = settings_for(monkeypatch, "gate", min_conf=min_conf)
+    installed = install(settings, polarity, tau=installed_tau)
+    pin(monkeypatch, installed, tau=calibration_tau)
+    module, _ = with_student(settings, registry)
+    lm = DummyLM(answers())
+
+    pred = run(module, lm)
+
+    assert scored_segments(lm) == {segment: 1 for segment in ORDER if segment not in taken}
+    assert [s["source"] for s in pred.segments] == [
+        "student" if segment in taken else "llm" for segment in ORDER
+    ]
+    assert pred.system1["mode"] == "gate"
+    assert pred.system1["tau"] == used
+    assert pred.system1["accepted"] == len(taken)
+    assert pred.system1["coverage"] == round(len(taken) / len(ORDER), 3)
+    student_tau = installed_tau if min_conf is None else min_conf
+    assert [line["would_accept"] for line in shadow_lines(settings)] == [
+        segment in NEUTRAL and student_answer(runtime, segment).answer_confidence >= student_tau
+        for segment in ORDER
+    ]
+
+
+@pytest.mark.parametrize("case", ["shadow", "gate-with-another-model"])
+def test_without_a_calibrated_gate_the_students_tau_alone_decides(
+    case: str,
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shadow, or a gate the model guard turned into shadow: `accepted` and `tau` in the
+    system1 block, and would_accept in the log, are the student's own, whatever τ the pinned
+    calibration carries."""
+    settings = settings_for(monkeypatch, "shadow" if case == "shadow" else "gate")
+    installed = install(settings, polarity, tau=0.0)
+    pin(monkeypatch, installed, model=TEACHER, tau=0.9)
+    module, _ = with_student(settings, registry)
+    lm = lm_for(TEACHER if case == "shadow" else ANOTHER_MODEL)
+
+    pred = run(module, lm)
+
+    assert scored_segments(lm) == dict.fromkeys(ORDER, 1)
+    assert pred.system1["mode"] == "shadow"
+    assert (pred.system1["tau"], pred.system1["accepted"]) == (0.0, 3)
+    assert [line["would_accept"] for line in shadow_lines(settings)] == [
+        True, False, True, False, True
+    ]
 
 
 # --------------------------------------------------------------------------- shadow

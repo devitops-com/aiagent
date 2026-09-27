@@ -9,8 +9,10 @@ samples and torn (not JSON) lines, and a first run's log joined to its rerun's a
 does; the τ sweep; the sidecar slices, with (b) per slice, joined on doc_sha256 or on doc_id
 "sha256:<hex>"; the model the block pins, from the analysed lines' `model` field (without its
 "@<ctx>") or, for those that have none (a 0.7.0 log, alone or joined with a newer one), from
---model, which must be a model string an LM reports; and the pasted NEUTRAL block, executed
-against the real NeutralCalibration and kept within ruff's line length whatever `measured` holds.
+--model, which must be a model string an LM reports; --pin-tau, which calibrates and tests at
+its own τ (the block is offered only with it), and with --level the confirmation run's verdict;
+and the pasted NEUTRAL block, executed against the real NeutralCalibration and kept within
+ruff's line length whatever `measured` holds.
 
 The tool is loaded from its file. Most cases call its ``main(argv)`` in process: it imports
 aiagent.core.sentiment (dspy), so a subprocess per case would cost over a second each. One test
@@ -44,6 +46,8 @@ SERVED = f"{MODEL}@118784"  # as the log records it: with the context window
 THINKING = "openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::think"
 MAX_LINE = 88  # ruff's line length, for the pasted block
 PASTE_HEADER = "Paste into src/aiagent/core/sentiment.py"
+# The installed τ, pinned: on these lines the same acceptance as would_accept.
+PIN = ("--pin-tau", str(INSTALLED_TAU))
 
 
 @pytest.fixture(scope="module")
@@ -159,6 +163,11 @@ def pasted(stdout: str) -> str:
     head, _, block = stdout.partition(PASTE_HEADER)
     assert block, stdout
     return block.split("\n", 1)[1]
+
+
+def comment(block: str) -> str:
+    """The block's comment as one line of text: unwrapped."""
+    return " ".join(row.removeprefix("# ") for row in block.splitlines() if row.startswith("#"))
 
 
 def test_level_se_and_the_variance_components_of_the_accepted_segments(
@@ -574,17 +583,18 @@ def test_tau_replaces_the_default_sweep_and_is_inclusive(
     assert sweep[0.93]["n"] == 3
 
 
-@pytest.mark.parametrize("tau", ["0", "1.5", "x"])
+@pytest.mark.parametrize("option", ["--tau", "--pin-tau"])
+@pytest.mark.parametrize("tau", ["0", "1.5", "nan", "x"])
 def test_tau_must_be_in_the_unit_interval(
-    tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path, tau: str
+    tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path, tau: str, option: str
 ) -> None:
     log = write_jsonl(tmp_path / "shadow.jsonl", BASE)
 
     with pytest.raises(SystemExit) as exc:
-        tool.main([str(log), "--tau", tau])
+        tool.main([str(log), option, tau])
 
     assert exc.value.code == 2
-    assert "--tau" in capsys.readouterr().err
+    assert option in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("key", ["doc_sha256", "doc_id"])
@@ -689,7 +699,7 @@ def test_the_pasted_block_builds_the_neutral_calibration(
         "(en/de/hr), polarity a866e0a4, devai teacher Qwen3.8-27B"
     )
 
-    code, stdout, summary = analyse(tool, capsys, tmp_path, BASE, "--measured", measured)
+    code, stdout, summary = analyse(tool, capsys, tmp_path, BASE, "--measured", measured, *PIN)
 
     block = pasted(stdout)
     namespace: dict[str, Any] = {"NeutralCalibration": NeutralCalibration}
@@ -698,6 +708,7 @@ def test_the_pasted_block_builds_the_neutral_calibration(
         artifact_id=ARTIFACT,
         score_signature_sha256=SCORE_SIGNATURE_SHA256,
         model=MODEL,
+        tau=INSTALLED_TAU,
         level=1.5,
         se=round(math.sqrt(VAR_MEANS / 4), 4),
         sigma_between=round(math.sqrt(SIGMA_B2), 4),
@@ -710,6 +721,7 @@ def test_the_pasted_block_builds_the_neutral_calibration(
         "artifact_id": ARTIFACT,
         "score_signature_sha256": SCORE_SIGNATURE_SHA256,
         "model": MODEL,
+        "tau": INSTALLED_TAU,
         "level": 1.5,
         "se": 0.9574,
         "sigma_between": 1.7321,
@@ -723,6 +735,8 @@ def test_the_pasted_block_builds_the_neutral_calibration(
     assert "NEUTRAL: NeutralCalibration | None = NeutralCalibration(" in block
     assert "SCORE_SIGNATURE_SHA256" in block  # the note: the lab must have run this hash
     assert "do not pin" in block  # the pass test fails here
+    assert f"Pass test at τ {INSTALLED_TAU}: (a) 2/4" in comment(block)
+    assert f"    tau={INSTALLED_TAU}," in block.splitlines()
     assert "--measured" not in block  # it was given
     assert all(len(row) <= MAX_LINE for row in block.splitlines()), block
     assert code == 1
@@ -735,7 +749,7 @@ def test_a_measured_with_quotes_and_backslashes_stays_within_the_line_length(
     that the literals add (\\" and \\\\), not the raw text."""
     measured = 'lab "docs" run: Qwen3.8 – τ 0.8938, résumé \\ C:\\path ' * 4 + '"' * 90
 
-    _, stdout, _ = analyse(tool, capsys, tmp_path, BASE, "--measured", measured)
+    _, stdout, _ = analyse(tool, capsys, tmp_path, BASE, "--measured", measured, *PIN)
 
     block = pasted(stdout)
     assert all(len(row) <= MAX_LINE for row in block.splitlines()), block
@@ -749,7 +763,7 @@ def test_a_passing_log_gets_a_block_without_the_warning(
 ) -> None:
     records = one_segment_documents([0.0] * 95 + [1.0] * 5)
 
-    code, stdout, summary = analyse(tool, capsys, tmp_path, records)
+    code, stdout, summary = analyse(tool, capsys, tmp_path, records, *PIN)
 
     block = pasted(stdout)
     assert code == 0
@@ -777,6 +791,192 @@ def test_no_block_without_resamples(
     assert "NeutralCalibration(" not in pasted(stdout)
 
 
+def test_without_pin_tau_nothing_is_pinned(
+    tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A calibration pins the τ it was measured and tested at (D9), and the log only brackets
+    the installed τ: the block needs --pin-tau. The pass test and the exit code are the
+    installed τ's."""
+    records = one_segment_documents([0.0] * 95 + [1.0] * 5)
+
+    code, stdout, summary = analyse(tool, capsys, tmp_path, records)
+
+    assert code == 0
+    assert (summary["pin_tau"], summary["pinned"], summary["confirmation"]) == (None, None, False)
+    assert summary["passes"] is True
+    assert summary["neutral_calibration"] is None
+    assert "--pin-tau" in summary["cannot_pin"]
+    assert "cannot pin" in pasted(stdout) and "--pin-tau" in pasted(stdout)
+    assert "NeutralCalibration(" not in pasted(stdout)
+    assert "Pass test at the installed τ" in stdout
+
+
+def test_pin_tau_calibrates_and_tests_at_that_tau(
+    tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """At 0.92 BASE's accepted lines are those at 0.95, 0.93 and 0.97 (not 0.91): ȳ 1, 3, 3 with
+    k 3, 1, 3. LEVEL 7/3; var(ȳ) 4/3, so SE 2/3; σ_w² mean(1, 3) = 2; mean 1/k 5/9, so σ_b² =
+    4/3 − 10/9 = 2/9. (b) at round(7/3, 2) = 2.33: d1 (2.33 − 1)/3, d2 and d3 (2.33 − 3)/2."""
+    code, stdout, summary = analyse(
+        tool, capsys, tmp_path, BASE, "--pin-tau", "0.92", "--measured", "lab"
+    )
+
+    pinned = summary["pinned"]
+    assert summary["pin_tau"] == pinned["tau"] == 0.92
+    assert pinned["n"] == 3
+    assert pinned["level"] == pytest.approx(7 / 3)
+    assert pinned["se"] == pytest.approx(2 / 3)
+    assert pinned["sigma_within"] == pytest.approx(math.sqrt(2))
+    assert pinned["mean_inv_k"] == pytest.approx(5 / 9)
+    assert pinned["sigma_between"] == pytest.approx(math.sqrt(2) / 3)
+    assert (pinned["coverage"]["lines"], pinned["coverage"]["accepted"]) == (7, 3)
+    assert (pinned["agreement"]["n"], pinned["agreement"]["agree"]) == (3, 1)
+    assert pinned["agreement"]["bound"] == clopper_pearson_lower(1, 3, 0.05)
+    drift = pinned["drift"]
+    assert drift["level"] == 2.33
+    deltas = [1.33 / 3, -0.67 / 2, -0.67 / 2]
+    assert [d["delta"] for d in drift["deltas"]] == pytest.approx(deltas)
+    assert drift["p95_abs_delta"] == pytest.approx(1.33 / 3)
+    assert summary["installed"]["n"] == 4  # still reported
+    assert (summary["passes"], code) == (False, 1)
+    assert "Accepted neutral segments at τ 0.92" in stdout
+    assert "  LEVEL 2.3333 over n = 3, SE 0.6667" in stdout
+    assert "Pass test at τ 0.92" in stdout
+    assert "  (a) band agreement: 1/3 in (-2, +2)" in stdout
+    assert "  (b) mean drift: 3 documents (need ≥ 100), p95 |Δ| 0.4433" in stdout
+    block = pasted(stdout)
+    assert "NOT READY: the pass test fails at τ 0.92; do not pin this." in comment(block)
+    assert "n = 3 accepted neutral segments at τ 0.92. Pass test at τ 0.92: (a) 1/3" in comment(
+        block
+    )
+    namespace: dict[str, Any] = {"NeutralCalibration": NeutralCalibration}
+    exec(block, namespace)  # the block is this tool's own output
+    assert namespace["NEUTRAL"] == NeutralCalibration(
+        artifact_id=ARTIFACT,
+        score_signature_sha256=SCORE_SIGNATURE_SHA256,
+        model=MODEL,
+        tau=0.92,
+        level=2.33,
+        se=0.6667,
+        sigma_between=0.4714,
+        sigma_within=1.4142,
+        n=3,
+        measured="lab",
+    )
+
+
+def two_segment_documents() -> list[dict[str, Any]]:
+    """100 documents: a segment the student calls neutral at 0.97 (samples −1, 0, 1: ȳ 0, s² 1)
+    and one at 0.92 (ȳ 3). The installed τ takes both, and (a) fails with 100 of 200; τ 0.96
+    takes the first alone: LEVEL 0, and both tests pass."""
+    return [
+        record
+        for i in range(100)
+        for record in (
+            line(f"t{i}", f"t{i}", 0, 2, [-1.0, 0.0, 1.0], confidence=0.97),
+            line(f"t{i}", f"t{i}", 1, 2, [3.0, 3.0, 3.0], confidence=0.92),
+        )
+    ]
+
+
+def test_pin_tau_decides_the_verdict_and_the_exit_code(
+    tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    records = two_segment_documents()
+
+    installed_code, _, installed = analyse(tool, capsys, tmp_path, records)
+    code, stdout, summary = analyse(
+        tool, capsys, tmp_path, records, "--pin-tau", "0.96", "--measured", "lab"
+    )
+
+    assert installed_code == 1
+    assert installed["installed"]["agreement"]["passes"] is False
+    assert code == 0
+    assert summary["passes"] is True
+    assert summary["installed"]["passes"] is False  # reported, but the verdict is τ 0.96's
+    pinned = summary["pinned"]
+    assert (pinned["n"], pinned["level"], pinned["se"]) == (100, 0.0, 0.0)
+    assert (pinned["sigma_within"], pinned["sigma_between"]) == (1.0, 0.0)
+    assert pinned["coverage"]["coverage"] == 0.5
+    assert pinned["agreement"]["bound"] == pytest.approx(0.05 ** (1 / 100))
+    assert (pinned["drift"]["documents"], pinned["drift"]["p95_abs_delta"]) == (100, 0.0)
+    assert (
+        "  (a) band agreement: 100/100 in (-2, +2), CP lower bound 0.9705 (α = 0.05, need ≥ "
+        "0.90): PASS"
+    ) in stdout.splitlines()
+    rows = [row.split()[0] for row in stdout.splitlines() if row.startswith(("  0.9", "  installed"))]
+    assert rows == ["installed", "0.90", "0.92", "0.94", "0.96", "0.98"]  # the sweep stays
+    block = pasted(stdout)
+    assert "NOT READY" not in block
+    namespace: dict[str, Any] = {"NeutralCalibration": NeutralCalibration}
+    exec(block, namespace)  # the block is this tool's own output
+    assert namespace["NEUTRAL"] == NeutralCalibration(
+        artifact_id=ARTIFACT,
+        score_signature_sha256=SCORE_SIGNATURE_SHA256,
+        model=MODEL,
+        tau=0.96,
+        level=0.0,
+        se=0.0,
+        sigma_between=0.0,
+        sigma_within=1.0,
+        n=100,
+        measured="lab",
+    )
+
+
+@pytest.mark.parametrize(("level", "passes"), [("0.2", True), ("1.2", False)])
+def test_pin_tau_with_level_is_the_confirmation_run(
+    tool: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    level: str,
+    passes: bool,
+) -> None:
+    """D9: a fresh corpus tests the pin fixed in advance, (a) at τ and (b) at τ and the given
+    level: Δ = (L − 0)/2 per document, 0.1 passes and 0.6 does not. Nothing is offered to pin."""
+    code, stdout, summary = analyse(
+        tool, capsys, tmp_path, two_segment_documents(), "--pin-tau", "0.96", "--level", level
+    )
+
+    verdict = "PASS" if passes else "FAIL"
+    assert code == (0 if passes else 1)
+    assert summary["confirmation"] is True
+    assert summary["passes"] is passes
+    pinned = summary["pinned"]
+    assert pinned["agreement"]["passes"] is True
+    assert pinned["drift"]["level"] == float(level)
+    assert pinned["drift"]["p95_abs_delta"] == pytest.approx(float(level) / 2)
+    assert pinned["level"] == 0.0  # this log's own LEVEL, reported only
+    assert summary["neutral_calibration"] is None
+    assert "--pin-tau" in summary["cannot_pin"] and "--level" in summary["cannot_pin"]
+    assert f"(b) mean drift at the given level {level}: 100 documents" in stdout
+    assert PASTE_HEADER not in stdout
+    assert "NeutralCalibration(" not in stdout
+    assert stdout.rstrip().splitlines()[-1] == f"CONFIRMATION at τ 0.96, level {level}: {verdict}"
+
+
+def test_slices_follow_pin_tau(
+    tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """At 0.92 d2 keeps its 0.93 line and loses its 0.91 one; (b) at the pinned 2.33."""
+    meta = [("d1", "en"), ("d2", "de"), ("d3", "en")]
+    sidecar = write_jsonl(
+        tmp_path / "meta.jsonl",
+        [{"doc_sha256": sha(doc), "source": "wiki", "lang": lang} for doc, lang in meta],
+    )
+
+    _, stdout, summary = analyse(
+        tool, capsys, tmp_path, BASE, "--meta", str(sidecar), "--pin-tau", "0.92"
+    )
+
+    lang = summary["slices"]["lang"]
+    assert (lang["de"]["lines"], lang["de"]["accepted"]) == (2, 1)
+    assert (lang["en"]["lines"], lang["en"]["accepted"]) == (5, 2)
+    assert lang["de"]["drift"]["mean_delta"] == pytest.approx(-0.67 / 2)
+    assert "Slices by lang at τ 0.92" in stdout
+    assert "(b) at this log's pinned level 2.33" in stdout
+
+
 @pytest.mark.parametrize("option", [None, SERVED, MODEL, f"{MODEL}@4096"])
 def test_the_pinned_model_is_the_logs_without_its_context_window(
     tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path, option: str | None
@@ -785,7 +985,7 @@ def test_the_pinned_model_is_the_logs_without_its_context_window(
     alone (a rerun with another context window); a --model that agrees once both drop their
     "@<ctx>" changes nothing."""
     records = [*BASE[:3], *(line_ | {"model": f"{MODEL}@4096"} for line_ in BASE[3:])]
-    args = [] if option is None else ["--model", option]
+    args = [*PIN] if option is None else [*PIN, "--model", option]
 
     _, stdout, summary = analyse(tool, capsys, tmp_path, records, *args)
 
@@ -809,7 +1009,9 @@ def test_a_log_without_a_model_takes_it_from_the_option(
 ) -> None:
     """aiagent 0.7.0 logs no model: --model names the one the run used, "@<ctx>" dropped. The
     block says so, since the log alone does not show it."""
-    _, stdout, summary = analyse(tool, capsys, tmp_path, without_model(BASE), "--model", option)
+    _, stdout, summary = analyse(
+        tool, capsys, tmp_path, without_model(BASE), "--model", option, *PIN
+    )
 
     assert (summary["model"], summary["model_from"]) == (expected, "--model")
     assert summary["lines"]["no_model"] == 7
@@ -828,7 +1030,7 @@ def test_a_log_without_a_model_and_no_option_cannot_pin(
 ) -> None:
     records = without_model(one_segment_documents([0.0] * 95 + [1.0] * 5))
 
-    code, stdout, summary = analyse(tool, capsys, tmp_path, records)
+    code, stdout, summary = analyse(tool, capsys, tmp_path, records, *PIN)
 
     assert code == 0  # the pass test passes; only the pin is missing
     assert summary["model"] is None and summary["model_from"] is None
@@ -875,7 +1077,7 @@ def test_a_log_whose_analysed_lines_name_a_model_only_in_part_exits_2(
 def test_model_vouches_for_the_analysed_lines_that_name_none(
     tool: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    _, stdout, summary = analyse(tool, capsys, tmp_path, JOINED, "--model", SERVED)
+    _, stdout, summary = analyse(tool, capsys, tmp_path, JOINED, "--model", SERVED, *PIN)
 
     assert (summary["model"], summary["model_from"]) == (MODEL, "log and --model")
     assert summary["runs"]["duplicates"] == [
@@ -915,8 +1117,10 @@ def test_the_model_of_a_duplicate_document_left_out_does_not_count(
     nothing is pinned without --model, and --model names theirs, whatever the newer run's."""
     records = [*without_model(BASE), *rerun(BASE, SERVED)]
 
-    code, stdout, summary = analyse(tool, capsys, tmp_path, records)
-    thinking_code, _, thinking = analyse(tool, capsys, tmp_path, records, "--model", THINKING)
+    code, stdout, summary = analyse(tool, capsys, tmp_path, records, *PIN)
+    thinking_code, _, thinking = analyse(
+        tool, capsys, tmp_path, records, "--model", THINKING, *PIN
+    )
 
     assert code == 1  # the pass test (3 documents), not bad input
     assert len(summary["runs"]["duplicates"]) == 3
@@ -938,7 +1142,7 @@ def test_lines_left_out_do_not_name_the_model(
     broken = [line("r4", "d4", 0, 3, [9.0, 9.0, 9.0], model=other)]  # 1 of 3 segments
 
     code, _, summary = analyse(
-        tool, capsys, tmp_path, [*BASE, *broken, *rerun(BASE[3:5], other)]
+        tool, capsys, tmp_path, [*BASE, *broken, *rerun(BASE[3:5], other)], *PIN
     )
 
     assert code == 1  # the pass test (3 documents), not bad input
@@ -1082,11 +1286,13 @@ def test_the_script_runs_standalone(tmp_path: Path) -> None:
     env = {**os.environ, "HOME": str(tmp_path / "home")}
 
     result = run_script(
-        [sys.executable, "-I", str(TOOL), str(log), "--measured", "lab", "--json", str(out)], env
+        [sys.executable, "-I", str(TOOL), str(log), "--measured", "lab", "--json", str(out), *PIN],
+        env,
     )
 
     assert result.returncode == 1, result.stderr
-    assert "Pass test at the installed τ" in result.stdout
+    assert f"Pass test at τ {INSTALLED_TAU}" in result.stdout
     assert SCORE_SIGNATURE_SHA256 in result.stdout
     assert f'model="{MODEL}"' in result.stdout
+    assert f"tau={INSTALLED_TAU}," in result.stdout
     assert json.loads(out.read_text(encoding="utf-8"))["installed"]["n"] == 4
