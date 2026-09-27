@@ -32,7 +32,13 @@ aiagent run sentiment --text "..."
 URLs are fetched through the devai egress proxy (pipelock); local files are read
 directly. Output is human-readable by default, or structured JSON with `--json`.
 
-**System 1** (`system1_mode.sentiment = "shadow" | "gate"`) borrows the installed
-`polarity` student for segments it calls neutral; gate needs a pinned calibration
-and shadows until one exists. Use gate only on document corpora that passed a
-sentiment shadow run; reviews stay off or shadow.
+**System 1** (`system1_mode.sentiment = "shadow" | "gate"`, off by default) borrows
+the installed `polarity` student for segments it calls neutral. A calibration is
+pinned for the polarity student `a866e0a4…` on the teacher
+`Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink` at τ 0.96: in gate, a segment it calls
+neutral at that confidence or more scores the calibrated level with no LLM call.
+With another student, model or `ScoreSegment`, gate shadows. Use gate only on
+document corpora that passed the pass test: the calibration covers encyclopedic
+documents like the Wikipedia articles it was measured and confirmed on, and
+another document corpus needs its own sentiment shadow run and pass test first;
+reviews stay off or shadow.

@@ -1,11 +1,12 @@
 # System 1 walkthrough: teacher, student, shadow, gate
 
-**Status:** 2026-09-27. Phases 1-9 are **DONE**. Phase 10, the confirmation run of owner decision
-D9, is **IN PROGRESS**: its corpus is built, its analysis pre-registered, and the lab run started
-at 11:32 UTC. Phase 11 is **NEXT** and depends on phase 10's verdict. Phases 9-11 use PR 3 of the
-sentiment design (its §4): the calibration script, `--pin-tau`, the calibration's own τ and the
-model guard. PR 3 is merged (#23, 2026-09-27) but not released, so no aiagent release has them
-yet: use a checkout of `main`.
+**Status:** 2026-09-27. Phases 1-10 are **DONE**. Phase 10, the pre-registered confirmation run
+of owner decision D9, **passed** at τ 0.96 and level −0.02 (lab, 11:32-12:01 UTC), so run 1's
+calibration is pinned in `core/sentiment.py` (the follow-up PR to PR 3). Phase 11 is **NEXT**:
+the release, then the owner enables gate per document corpus, for corpora that passed the pass
+test. Phases 9-11 use PR 3 of the sentiment design (its §4): the calibration script, `--pin-tau`,
+the calibration's own τ and the model guard. PR 3 is merged (#23, 2026-09-27) but not released,
+and neither is the pin, so no aiagent release has them yet: use a checkout of `main`.
 
 This is the record of the first System 1 campaign, end to end, as it ran in the devai lab: the
 `polarity` student (distilled, shipped, installed, shadowed) and the calibration that lets
@@ -76,8 +77,8 @@ The picture of the same flow, with devai's side, is
 | 7 | Sentiment: resample fix, t and S, System 1 in shadow | 2026-09-26 | DONE | 0.6.0 and 0.7.0; t 1.88 s, S 3.18 |
 | 8 | Calibration runs 1 and 2 | 2026-09-26 18:24-19:40 | DONE | 31 + 40 min, no failed row |
 | 9 | Analysis, owner decision D9 | 2026-09-26/27 | DONE | fails at the installed τ; τ 0.96 |
-| 10 | Confirmation run at τ 0.96 | 2026-09-27 | IN PROGRESS | pre-registered, not run |
-| 11 | Pin, release, gate for documents | – | NEXT | only on PASS |
+| 10 | Confirmation run at τ 0.96, pin | 2026-09-27 11:32-12:01 | DONE | PASS: (a) 455/468, (b) p95 0.404; pinned |
+| 11 | Release, gate for documents | – | NEXT | gate is the owner's call, per corpus |
 
 ## 3. Prerequisites
 
@@ -465,8 +466,9 @@ PY=$(head -1 "$(readlink -f "$(command -v aiagent)")" | sed 's/^#!//; s/ .*//')
 
 **System 1 for sentiment (0.7.0).** `system1_mode.sentiment` borrows the installed `polarity`
 student. In gate mode a segment the student calls `neutral` at confidence ≥ τ gets no LLM call and
-scores one calibrated level. 0.7.0 ships no calibration (`NEUTRAL = None`), so gate runs as shadow,
-with a warning. Shadow logs one line per segment, without text, to
+scores one calibrated level. 0.7.0 ships no calibration (`NEUTRAL = None`), so its gate runs as
+shadow, with a warning; the calibration was pinned after phase 10, not yet released (Status).
+Shadow logs one line per segment, without text, to
 `<artifacts_dir>/system1/skills/sentiment/score/shadow.jsonl`: the student's label, confidence and
 `would_accept` beside the LLM's samples.
 
@@ -693,7 +695,7 @@ model string (`::think` against `::nothink` included), or no LM, only shadows, w
 PR 3's shadow lines carry the `model` too. A router that serves another model under the same name
 is still not detected: recalibrate after changing what the `default` alias serves.
 
-## 13. Phase 10: the confirmation run (IN PROGRESS, 2026-09-27)
+## 13. Phase 10: the confirmation run and the pin (DONE, 2026-09-27 11:32-12:01)
 
 **Prepared** (2026-09-27):
 - **Corpus** `<pilot dir>/sentiment/confirm/confirm.jsonl`: 120 fresh Wikipedia articles, 40 each
@@ -733,24 +735,90 @@ the one allowed exception), the only model on the `[-v]` lines is the pinned one
 teacher's `/health` did not change. Fewer than 100 documents in (b) with all 120 analysed is a
 FAIL, not a failed run.
 
-## 14. Phase 11: after the verdict (NEXT)
+**What came back** (`out-confirm/confirm.check`), with aiagent 0.7.0 as pre-registered:
 
-- **On PASS:** paste run 1's `NEUTRAL` block (section 12, generated again with `--measured`
-  naming run 1 and the confirmation) into `src/aiagent/core/sentiment.py`, record the figures in
-  the design doc (D9) and the CHANGELOG, in a follow-up PR to PR 3, then release. After that the owner enables
-  gate, per corpus, for document corpora only:
+| | Confirmation run: `confirm` |
+|---|---|
+| Time | 11:32:17-12:01:27, **29 min** |
+| Rows ok / failed | 120 / 0 (no rerun) |
+| Shadow lines (complete runs) | 1,051 (120) |
+| `would_accept` at the installed τ | 694 |
+| Too long for the student | 0 |
+| LLM samples that did not parse | 2 |
+| `[-v] elapsed`, calls | 1748.30 s, 3,277 (0.533 s per call); the only model on the `[-v]` lines is the pinned one |
+| `student_ms` p50 / p95 | 122 / 677 ms |
+
+The teacher's `/health` was the same before and after the run.
+
+**The verdict** (`confirm/analysis/confirm-analysis.txt`; `confirm-validity.txt`: as
+pre-registered, 120 of 120 documents analysed, no incomplete run, no duplicate):
+
+```
+Pass test at τ 0.96
+  (a) band agreement: 455/468 in (-2, +2), CP lower bound 0.9562 (α = 0.05, need ≥ 0.90): PASS
+  (b) mean drift at the given level -0.02: 117 documents (need ≥ 100), p95 |Δ| 0.4040 (need ≤ 0.5), mean Δ -0.0571, …: PASS
+…
+CONFIRMATION at τ 0.96, level -0.02: PASS
+```
+
+At τ 0.96 the student would take 468 of the 1,051 segments (44.5%).
+
+**Exploratory, not part of the verdict** (the pre-registration forbids acting on the sweep or the
+slices):
+- The confirmation corpus's own LEVEL at τ 0.96 is +0.1232 (SE 0.0312), against run 1's
+  −0.0205 (SE 0.0332): a difference of about 0.14 between the two corpora, about 3 standard
+  errors of the difference. (b) already includes it: it scores the accepted segments at the
+  pinned −0.02, and its mean Δ is −0.057.
+- At the installed τ (0.8938) (b) fails again, p95 |Δ| 0.719, as on run 1 (0.591). τ 0.96, not
+  the student's own, is what passes.
+- By language, (b)'s p95 |Δ| is 0.404 (de), 0.345 (en) and 0.717 (hr), over 38-40 documents
+  each: too few documents per language for the test's 100.
+
+**The pin** follows `PREREG.md`'s "On PASS" block exactly: run 1's `NEUTRAL` block (section 12),
+generated again with `--measured` naming run 1 and the confirmation
+(`confirm/analysis/run1-pin.txt`), is pasted into `src/aiagent/core/sentiment.py`, and the paste
+check prints `NEUTRAL as generated: yes`:
+
+```
+NEUTRAL: NeutralCalibration | None = NeutralCalibration(
+    artifact_id="a866e0a4734f66ddb975ac1d2e41780c8961913cf6fa738ef53b6bc7b843e273",
+    score_signature_sha256=(
+        "b26dee349163d3219febe678ead8fd8feb1c8e13e3c0469a883f7e3cb7febc96"
+    ),
+    model="openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink",
+    tau=0.96,
+    level=-0.02,
+    se=0.0332,
+    sigma_between=0.6832,
+    sigma_within=0.4039,
+    n=472,
+    measured=(…),   # run 1, then "confirmed by lab 2026-09-27: confirm.jsonl 55369be0 …"
+)
+```
+
+`tests/test_sentiment_pin.py` holds the shipped values to the pre-registration's. Gate stays
+**off**: the pin makes it available, and nothing turns it on.
+
+## 14. Phase 11: the release, then gate for documents (NEXT)
+
+- **Release** the pin (with PR 3) through `make release`.
+- **Then the owner enables gate,** per corpus, only for document corpora that passed the pass
+  test (D3), with the pinned student `a866e0a4…` installed and aiagent pinned to the teacher as
+  in section 3. The pinned calibration covers encyclopedic documents like the Wikipedia articles
+  it was measured and confirmed on (D7); another document corpus needs its own shadow run and
+  pass test first (sections 11-13):
 
   ```toml
   [system1_mode]
-  sentiment = "gate"   # documents only; reviews and opinion text stay "off" or "shadow"
+  sentiment = "gate"   # a document corpus that passed; reviews and opinion stay "off"/"shadow"
   ```
 
-- **On FAIL:** nothing is pinned, `NEUTRAL` stays `None`, gate keeps running as shadow, and the
-  owner decides with the full analysis output.
+  With another student, another `ScoreSegment` or another model (its `@<ctx>` aside), gate
+  runs as shadow, with a warning.
 - **Later, separately:** an opinion-weighted, larger polarity student (possibly with the deferred
   synthetic augmentation), a campaign at 0.95, and a wider sentiment gate with its own
   calibration. Any new student or `ScoreSegment` change needs a new calibration: the guard shadows
-  until one is pinned.
+  until one is pinned for it.
 
 ## 15. Troubleshooting: what went wrong for real
 
@@ -791,6 +859,7 @@ which.
 | One warm `ScoreSegment` call (t), speedup at 4 in flight (S) | 1.88 s, 3.18 |
 | Sentiment shadow, 120 articles at `--resample 3` | 31 min (3,448 calls, 0.547 s each at 4 in flight) |
 | Sentiment shadow, fresh-500 at `--resample 3` | 40 min (4,834 calls) |
+| Sentiment shadow, 120 fresh articles at `--resample 3` (confirmation) | 29 min (3,277 calls, 0.533 s each at 4 in flight) |
 
 ## 17. Where the numbers come from
 
@@ -802,9 +871,13 @@ which.
   parity, calibration).
 - **Corpora and runbooks,** in `<pilot dir>`: `CORPUS.md`, `FRESH.md`, `RUNBOOK.md` (polarity);
   `sentiment/CORPUS.md` and `RUNBOOK.md` (runs 1 and 2), `sentiment/out/*.check` and `*.err`;
-  `sentiment/confirm/CORPUS.md`, `PREREG.md` and `RUNBOOK-CONFIRM.md` (the confirmation run).
+  `sentiment/confirm/CORPUS.md`, `PREREG.md` and `RUNBOOK-CONFIRM.md` (the confirmation run),
+  `sentiment/out-confirm/confirm.check` and `*.err`.
 - **Analysis:** `tools/system1/sentiment_calibration.py` (PR 3, merged, not yet released) on
-  `sentiment/out/*-shadow.jsonl`.
+  `sentiment/out/*-shadow.jsonl`; in `sentiment/confirm/analysis/`, the confirmation's sealed
+  output (`code.txt`, `confirm-all-shadow.jsonl`, `confirm-analysis.txt` and `.json`,
+  `confirm-validity.txt`, all in its `SHA256SUMS`), and `run1-pin.txt` and `.json`, which the
+  pin block wrote afterwards and are not sealed (sha256 `c3304af8…aaf9` and `d364c2ca…1ab8`).
 - **Not in a lab file:** devai's own observations of the GPU smoke test (the 14 s router swap, the
   2 min 5 s cold start, about 3.6 GiB of VRAM), the owner's `LAYA_MAX_HOLD_S` of 900 s (a devai
   setting), and two measurements made by hand during the pilot: the fp16 test (0 of 611 answers

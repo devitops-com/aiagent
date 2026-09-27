@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`sentiment`'s System 1 calibration is pinned, so its gate can run.** The
+  pre-registered confirmation of owner decision D9 passed (lab 2026-09-27, 120 fresh
+  Wikipedia articles in en/de/hr, at τ 0.96 and level −0.02): band agreement 455/468,
+  Clopper-Pearson lower bound 0.9562 (≥ 0.90), and a 95th-percentile per-document mean
+  drift of 0.404 (≤ 0.5) over 117 documents. The pin is the calibration measured on 120
+  other Wikipedia articles (2026-09-26): level −0.02 (SE 0.0332, σ_b 0.6832, σ_w 0.4039,
+  n 472) at τ 0.96, for the `polarity` student `a866e0a4…` and the model
+  `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink` (any `@<ctx>`). In gate mode that
+  student scores the segments it calls neutral at confidence 0.96 or more with no LLM
+  call: 42-45% of the segments of those articles. Gate stays **off by default**
+  (`system1_mode.sentiment`) and is only for document corpora that passed the pass
+  test: the calibration covers encyclopedic documents like those Wikipedia articles,
+  and another document corpus needs its own shadow run and pass test first. With
+  another student, model or `ScoreSegment` it still only shadows, with a warning.
 - **A calibration script for `sentiment`'s System 1:**
   `tools/system1/sentiment_calibration.py` reads a sentiment shadow log (from a
   shadow run at `--resample 3`) and prints the calibrated level of the neutral
@@ -50,8 +64,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (run skills, sentiment, eval and optimize, distill) instead of "goal-reaching
   loops"; `skills list` no longer claims to show each skill's model alias (only
   `--json` has it); `run --input` takes a file holding a JSON object; `models list`
-  says its alias lines leave out a global `context_tokens`; `sentiment` says gate
-  runs as shadow until a calibration is pinned; `distill label` gives the ranges of
+  says its alias lines leave out a global `context_tokens`; `sentiment` says when
+  gate takes a segment and when it only shadows; `distill label` gives the ranges of
   `--k` and `--temperature`, and `distill plan` the full qualification rule.
 
 ## [0.7.0] - 2026-09-26

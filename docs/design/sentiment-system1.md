@@ -1,7 +1,10 @@
 # System 1 in the sentiment skill: design
 
-**Status:** design, 2026-09-26, revision 2. PR 1 is released in 0.6.0; PR 2 is built, shipped
-uncalibrated (§4, "PR 2 as built"); PR 3 is built and waits for the confirmation run (D9, §3).
+**Status:** design, 2026-09-26, revision 2; updated 2026-09-27. PR 1 is released in 0.6.0 and
+PR 2 in 0.7.0, shipped uncalibrated (§4, "PR 2 as built"). PR 3 is merged (#23), and the
+pre-registered confirmation run passed (D9, §3), so its follow-up pins the calibration (§4,
+"Pin"); neither is released yet. Gate stays off by default: the owner enables it per document
+corpus, for corpora that passed the pass test (D3, D7).
 - A review raised 13 points on revision 1, all applied here (§5). The owner decided D1-D8 on
   2026-09-26: "go with recommendations" (§3), and D9 on 2026-09-27 (§3).
 
@@ -48,7 +51,8 @@ new dependency, no new training campaign.
     confidence ≥ τ. The score is then one calibrated value. The LLM scores every other segment
     exactly as in off mode.
   - The calibration is pinned in code together with the student's `artifact_id` and
-    `ScoreSegment`'s signature hash. PR 2 ships none, so gate runs as shadow until the lab pins one.
+    `ScoreSegment`'s signature hash. PR 2 shipped none, so its gate ran as shadow; the lab's
+    confirmed calibration is pinned since (D9, §3).
 - **Lab, then PR 3:**
   - Two shadow runs through sentiment's own segmenter: one on the target document corpus (D7), and
     one on fresh-500 as the review corpus.
@@ -76,8 +80,9 @@ new dependency, no new training campaign.
   - The statistic is the one the score stands in for: the expected LLM score of a segment that the
     gate accepts. So it is unbiased for those segments by construction.
   - It is rounded to 2 decimals, like an LLM segment's mean.
-- **No provisional value.** PR 2 ships `NEUTRAL = None`, and gate then runs as shadow (§2.4).
-  Measured and guessed values are never mixed.
+- **No provisional value.** PR 2 shipped `NEUTRAL = None`, and gate then ran as shadow (§2.4),
+  until the measured and confirmed calibration was pinned (§4, "Pin"). Measured and guessed
+  values are never mixed.
 - **The student's spread is measured too.** The same run gives two variance components over the
   accepted neutral segments:
   - σ_w²: the pooled within-segment variance of the r = 3 LLM samples;
@@ -550,9 +555,13 @@ several sources into one text (`cli/sentiment.py:62`).
     reads `CONFIRMATION at τ T, level L: PASS` or `FAIL`).
   - Pin only if it passes. The calibration pinned is the first run's, measured at T
     (`--pin-tau T`); the confirmation run calibrates nothing.
-- **Pin.** PR 3 adds `NEUTRAL` with the run's `artifact_id`, `ScoreSegment` hash, model and τ,
-  plus the script and its unit test. The owner then enables `system1_mode.sentiment = "gate"`
-  for the corpora that passed.
+- **Pin.** PR 3 adds the script and its unit test; once the confirmation passes, its follow-up
+  pins `NEUTRAL` with the run's `artifact_id`, `ScoreSegment` hash, model and τ. Done
+  2026-09-27: the confirmation passed (§3, D9), and run 1's calibration at τ 0.96 is pinned
+  (§4, "Pin"). Gate stays off by default: the owner enables `system1_mode.sentiment = "gate"`
+  per document corpus, for the corpora that passed (D3). The pinned calibration covers
+  encyclopedic documents like the Wikipedia articles it was measured and confirmed on (D7);
+  another document corpus needs its own shadow run and pass test first.
 
 ### 2.10 Tests, docs, CHANGELOG
 
@@ -619,6 +628,11 @@ several sources into one text (`cli/sentiment.py:62`).
 - **PR 3:** the analysis script on a hand-made log, with a known LEVEL, σ, band agreement and Δ,
   also at `--pin-tau` and in the confirmation run; the gate at the higher of the student's and
   the calibration's τ (D9), with `system1_min_conf` above and below the calibration's.
+- **The pin** (`test_sentiment_pin.py`, and the shipped-calibration tests of
+  `test_sentiment_system1.py`, with no monkeypatch): the shipped `NEUTRAL` has the
+  pre-registered fields and `ScoreSegment`'s hash, its τ 0.96 is above the lab student's
+  0.8938 and decides the gate, and the fixture student (another `artifact_id`) only shadows
+  under it, with the stale-calibration warning.
 - **Existing tests:** the cascade tests stay green after the `Student` extraction. The subprocess
   import test still guarantees that `aiagent.cli.app` loads neither numpy nor onnxruntime.
 
@@ -770,6 +784,21 @@ under the same name is still not guarded (§2.11, risk 3).
   `a866e0a4734f66ddb975ac1d2e41780c8961913cf6fa738ef53b6bc7b843e273`, model
   `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink`, `ScoreSegment`
   `b26dee349163d3219febe678ead8fd8feb1c8e13e3c0469a883f7e3cb7febc96`.
+- **The confirmation (lab 2026-09-27): PASS,** as pre-registered
+  (`<pilot dir>/sentiment/confirm/PREREG.md`):
+  - 120 fresh Wikipedia articles (en/de/hr, `confirm.jsonl` `55369be0…`), disjoint from run 1;
+    aiagent 0.7.0 in shadow at `--resample 3`, teacher
+    `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784`; 29 min, 120/120 rows, 1051
+    segments;
+  - at τ 0.96 and level −0.02: (a) 455/468 in band, CP lower bound 0.9562 ≥ 0.90; (b) 117
+    documents, p95 |Δ| 0.4040 ≤ 0.5, mean Δ −0.0571; coverage 44.5% of segments.
+- **Pinned:** run 1's figures above, at τ 0.96 (§4, "Pin"). Gate stays off by default; the
+  owner enables it per document corpus, for the corpora that passed the pass test (D3, D7).
+- **Exploratory, not part of the verdict** (the pre-registration forbids acting on it):
+  - the confirmation corpus's own LEVEL at τ 0.96 is +0.1232 (SE 0.0312), against run 1's
+    −0.0205 (SE 0.0332): a between-corpus difference of about 0.14, about 3 SE of the
+    difference, which (b) already includes (mean Δ −0.057 at the pinned −0.02);
+  - at the installed τ, (b) failed again: p95 |Δ| 0.719 (run 1: 0.591).
 
 ## 4. Delivery
 
@@ -811,7 +840,7 @@ under the same name is still not guarded (§2.11, risk 3).
    - the analysis and the pass test;
    - a PR that pins `NEUTRAL`, with the script.
 
-   **PR 3 as built (so far)** (2026-09-26):
+   **PR 3 as built** (2026-09-26/27, merged as #23):
    - `tools/system1/sentiment_calibration.py`, the analysis script (§2.9), with its unit test: it
      prints every number of §2.9 and the `NEUTRAL` block to pin. The block's `model` comes from
      the `model` field of the analysed lines (the first complete run per document; lines left
@@ -843,9 +872,21 @@ under the same name is still not guarded (§2.11, risk 3).
        decimals), so they differ only for a confidence less than 5·10⁻⁵ below T: the script
        accepts it, the gate does not.
 
-   Next (D9): the confirmation run on 120 fresh articles at τ 0.96 and level −0.02; if it
-   passes, pin run 1's block (`--pin-tau 0.96`). After that, the owner enables
-   `system1_mode.sentiment = "gate"` for the corpora that passed.
+   **Pin** (2026-09-27, the follow-up PR to PR 3): the confirmation run passed (D9, §3), so
+   `NEUTRAL` is run 1's block at τ 0.96, generated by `sentiment_calibration.py --pin-tau 0.96
+   --measured …` as the pre-registration prescribes and pasted unchanged:
+   - student `a866e0a4…e273`, `ScoreSegment` `b26dee34…`, model
+     `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink`, τ 0.96, level −0.02, se 0.0332,
+     σ_b 0.6832, σ_w 0.4039, n 472; `measured` names run 1 and the confirmation;
+   - gate engages only with that student, that model (its `@<ctx>` aside) and that
+     `ScoreSegment`; otherwise it shadows, with a warning;
+   - `test_sentiment_pin.py` holds the shipped values to the pre-registration's (§2.10);
+   - `system1_mode.sentiment` stays off by default; enabling gate is the owner's call, per
+     document corpus, for the corpora that passed the pass test (D3). The pin covers
+     encyclopedic documents like the Wikipedia articles it was measured and confirmed on
+     (D7); another document corpus needs its own shadow run and pass test first.
+
+   Next: the release.
 
 ## 5. Critique disposition
 

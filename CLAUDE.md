@@ -98,9 +98,12 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
   for **neutral segments only**; `gate` needs the pinned `NEUTRAL` calibration in
   `core/sentiment.py` (its `artifact_id`, `SCORE_SIGNATURE_SHA256` and the score calls'
   `model`, `@<ctx>` aside, must match), else it shadows; the student then takes a segment
-  only at confidence ≥ max(its own τ, the calibration's `tau`). It ships `None` until a lab
-  calibration run pins one: `tools/system1/sentiment_calibration.py` turns a shadow log
-  into the pass test and the block to pin (`--pin-tau T`; with `--level L`, a confirmation).
+  only at confidence ≥ max(its own τ, the calibration's `tau`). It ships the D9-confirmed pin
+  (student `a866e0a4…`, model `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink`, τ 0.96, level
+  −0.02; `tests/test_sentiment_pin.py` holds it to the pre-registration). Gate stays off by
+  default and is only for document corpora that passed the pass test (D3/D7).
+  `tools/system1/sentiment_calibration.py` turns a shadow log into the pass test and the block
+  to pin (`--pin-tau T`; with `--level L`, a confirmation).
 - `distill/` — the campaign (depends on `system1`, never on `cascade`):
   `questions.py` (signature -> laya question + binds), `segment.py`, `splits.py`,
   `dataset.py` (the aiagent -> devai contract), `label.py` (teacher votes),
