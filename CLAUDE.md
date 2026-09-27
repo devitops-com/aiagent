@@ -346,6 +346,9 @@ verify-versions.py}`,
   assets and tag cannot change, so drop-the-tag recovery works only before publish.
   v0.3.1 and earlier have no GitHub release any more (tags only). `gh release create`
   with files uploads to a draft first, which this allows.
+- Auto-delete of head branches on (`delete_branch_on_merge: true`, since 2026-09-27):
+  merging a PR (`gh pr merge N --merge`) deletes its branch on GitHub; delete the local
+  one with `git branch -d`.
 - Optional: secret scanning and push protection; `sha_pinning_required` last, after a
   trial on a branch.
 
