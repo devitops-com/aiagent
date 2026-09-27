@@ -446,8 +446,12 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
   run's measured spread enters the volatility and the standard error, so a student
   segment never counts as error-free. Every other segment is scored as in off mode.
   The level is pinned in the code for one student (`artifact_id`), one
-  `ScoreSegment` and one model; **none is pinned yet**, so gate runs as shadow, with
-  a warning, until a lab run on the target corpus pins one.
+  `ScoreSegment` and one model. **This version pins one** for the `polarity`
+  student `a866e0a4…` (the one the lab installed, τ 0.8938) and the teacher
+  `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink`: level −0.02 at τ 0.96,
+  measured on 120 Wikipedia articles (en/de/hr) and confirmed on 120 fresh ones
+  (2026-09-27). With another student, `ScoreSegment` or model, gate runs as shadow,
+  with a warning, until a lab run on the target corpus pins a calibration for it.
 - **The calibration carries its own τ**: the confidence its segments were measured
   and its pass test run at, which may be above the student's. The gate never takes
   a segment below it, so a lower `system1_min_conf` cannot reach segments the
@@ -458,10 +462,14 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
   `::think` where `::nothink` was measured, runs as shadow, with one warning naming
   both. The router may serve another model under the same name; that is not
   detected.
-- **Use gate only for document corpora** that passed that run's test. Review and
-  opinion corpora stay off or shadow: on opinion text the student's neutral calls
-  are its weakest. `aiagent sentiment` joins its sources into one text, so a call
-  that mixes a review with an article counts as a review.
+- **Use gate only for document corpora that passed the pass test.** It is off by
+  default and is enabled per corpus. The pinned calibration covers encyclopedic
+  documents like the Wikipedia articles it was measured and confirmed on; another
+  document corpus needs its own shadow run and pass test first (the
+  [System 1 walkthrough](SYSTEM1_WALKTHROUGH.md), phases 8-10). Review and opinion
+  corpora stay off or shadow: on opinion text the student's neutral calls are its
+  weakest. `aiagent sentiment` joins its sources into one text, so a call that mixes
+  a review with an article counts as a review.
 - **In gate mode `model_uncertainty` covers only the segments the LLM scored**
   (`n_resampled` of them), the harder ones: it is not comparable with an off-mode
   run. `n_samples` counts LLM samples only.
@@ -522,12 +530,14 @@ segment, in order: `score`, `rationale`, `source`, `student`; no text), `system1
 AIAGENT_SYSTEM1_MODE='{"sentiment":"shadow"}' aiagent sentiment --file report.pdf
 # a whole corpus in one process (the student loads once), results kept
 AIAGENT_SYSTEM1_MODE='{"sentiment":"shadow"}' aiagent run sentiment --jsonl corpus.jsonl >out.jsonl
-# gate: runs as shadow, with a warning, until a calibration is pinned for the student
+# gate, only for a document corpus that passed the pass test: neutral segments skip the
+# LLM with the pinned student and model; with another student or model it runs as shadow
 AIAGENT_SYSTEM1_MODE='{"sentiment":"gate"}' aiagent sentiment --file report.pdf --json
 ```
 
 The [System 1 walkthrough](SYSTEM1_WALKTHROUGH.md) follows the first teacher/student campaign
-end to end, from labeling the `polarity` student to the sentiment calibration runs.
+end to end, from labeling the `polarity` student to the sentiment calibration runs and the
+confirmation run that pinned the calibration.
 
 ### `eval` — score a skill over a dev set
 
@@ -764,9 +774,13 @@ LLM's scores in rollout order, `null` for a sample that did not parse; `[]` for 
 segment the gate gave the student) and `student_ms` (the student's time; 0 where a
 repeated segment reused its first verdict). Gate needs a calibration pinned for the
 installed student, the current `ScoreSegment` and the model in use (its `@<ctx>`
-aside); otherwise it shadows, with a warning. The calibration also names the τ it
-was measured and tested at, and the gate takes a segment only at the higher of that
-and the student's τ. Recalibrate after a new polarity
+aside); otherwise it shadows, with a warning. The one pinned is for the student
+`a866e0a4…` and `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink`, confirmed on
+fresh Wikipedia articles (2026-09-27); `system1_mode.sentiment` stays off unless
+set, and gate is only for document corpora that passed the pass test. The
+calibration also names the τ it
+was measured and tested at (0.96 for this one), and the gate takes a segment only
+at the higher of that and the student's τ. Recalibrate after a new polarity
 student, a `ScoreSegment` change or a model change. A different model the router
 serves under the same model string is not detected: the served model is not known
 without a network call.

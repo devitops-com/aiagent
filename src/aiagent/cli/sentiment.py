@@ -86,10 +86,16 @@ def sentiment(
     Joins the sources into one text, splits it into segments and scores each on
     -10 (very negative) to +10 (very positive), then reports the mean with its
     volatility, significance and a plain-language explanation. Give at least one
-    --text, --file or --url; URLs are fetched through proxy_url. With
-    system1_mode.sentiment set, polarity's installed student judges each
-    segment and its verdict is logged (shadow). Gate needs a pinned
-    calibration, and this version has none, so gate runs as shadow.
+    --text, --file or --url; URLs are fetched through proxy_url.
+    system1_mode.sentiment is off by default. In shadow, polarity's installed
+    student judges each segment and its verdict is only logged: run it on the
+    target corpus first. Use gate only for document corpora that passed the
+    pass test on such a run (the pinned calibration passed on Wikipedia
+    articles): a segment the student calls neutral at confidence 0.96 or more
+    gets no LLM call and scores the pinned calibration's level. That
+    calibration is for polarity student a866e0a4 on the teacher
+    Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink; with another student, model or
+    ScoreSegment, gate runs as shadow, with a warning.
     """
     settings = get_settings()
     docs = _ingest(text, file, url, settings)

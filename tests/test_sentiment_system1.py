@@ -29,6 +29,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Literal
@@ -623,20 +624,63 @@ def test_gate_without_a_matching_calibration_only_shadows(
     assert without_student(pred) == without_student(off(DummyLM(answers())))
 
 
-def test_the_shipped_calibration_is_none_so_gate_shadows(
+@pytest.mark.parametrize("served", [DUMMY_MODEL, SERVED], ids=["dummy", "calibration-model"])
+def test_the_shipped_calibration_is_for_another_student_so_gate_shadows(
+    served: str,
     polarity: Skill,
     registry: SkillRegistry,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """No monkeypatch of NEUTRAL: the shipped calibration is the lab student's (a866e0a4),
+    so the fixture student only shadows, even on the model the calibration names."""
     settings = settings_for(monkeypatch, "gate")
-    install(settings, polarity, tau=0.0)
+    installed = install(settings, polarity, tau=0.0)
+    shipped = sentiment_mod.NEUTRAL
+    assert shipped is not None and shipped.artifact_id != installed.artifact_id
     module, _ = with_student(settings, registry)
+    lm = lm_for(served)
 
-    pred = run(module, DummyLM(answers()))
+    pred = run(module, lm)
 
+    [warning] = warnings_in(caplog)
+    assert STALE in warning and installed.artifact_id in warning
+    assert scored_segments(lm) == dict.fromkeys(ORDER, 1)  # the LLM scores everything
     assert pred.system1["mode"] == "shadow"
-    assert any(STALE in w for w in warnings_in(caplog))
+    assert (pred.system1["tau"], pred.system1["accepted"]) == (0.0, 3)  # the student's own
+    assert all(s["source"] == "llm" for s in pred.segments)
+
+
+def test_the_shipped_tau_decides_the_gate_over_the_students(
+    polarity: Skill,
+    registry: SkillRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped calibration, re-pinned to the fixture student and DummyLM's model only.
+    At its own τ 0.0 the student would take all three neutral segments (would_accept in the
+    log), but none of its neutral answers reaches the shipped 0.96, so the gate takes none
+    and the LLM scores every segment."""
+    settings = settings_for(monkeypatch, "gate")
+    installed = install(settings, polarity, tau=0.0)
+    shipped = sentiment_mod.NEUTRAL
+    assert shipped is not None
+    monkeypatch.setattr(
+        sentiment_mod,
+        "NEUTRAL",
+        replace(shipped, artifact_id=installed.artifact_id, model=DUMMY_MODEL),
+    )
+    module, _ = with_student(settings, registry)
+    lm = DummyLM(answers())
+
+    pred = run(module, lm)
+
+    assert [line["would_accept"] for line in shadow_lines(settings)] == [
+        segment in NEUTRAL for segment in ORDER
+    ]
+    assert pred.system1["mode"] == "gate"
+    assert (pred.system1["tau"], pred.system1["accepted"]) == (shipped.tau, 0)
+    assert scored_segments(lm) == dict.fromkeys(ORDER, 1)
+    assert all(s["source"] == "llm" for s in pred.segments)
 
 
 # --------------------------------------------------------------------------- the model guard

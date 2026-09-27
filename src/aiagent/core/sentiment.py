@@ -29,7 +29,11 @@ decided. In ``gate`` mode a segment the student calls ``neutral`` at the higher 
 no LLM call; every other segment is scored as in off mode. ``shadow`` scores everything
 as off mode does. Both log one line per segment (no text), whose ``would_accept`` is the
 student's call at its own τ. Gate needs :data:`NEUTRAL` measured for this student, this
-``ScoreSegment`` and the model the score calls use; otherwise it only shadows.
+``ScoreSegment`` and the model the score calls use; otherwise it only shadows. The
+pinned :data:`NEUTRAL` is the document calibration of design §3 (D9): the polarity
+student ``a866e0a4…`` on the 27B teacher (``::mtp::nothink``) at τ 0.96, confirmed on
+fresh Wikipedia articles. The mode is off by default; gate is the owner's call per
+document corpus, after that corpus passed the pass test (D3, D7).
 
 The heavy lifting (segmentation, statistics) lives in pure, dspy-free modules
 (:mod:`aiagent.core.segment`, :mod:`aiagent.core.sentiment_stats`); this module
@@ -150,8 +154,40 @@ def calibration_model(lm_model: str) -> str:
 SCORE_SIGNATURE_SHA256: Final = (
     "b26dee349163d3219febe678ead8fd8feb1c8e13e3c0469a883f7e3cb7febc96"
 )
-# None until a lab run pins one (docs/design/sentiment-system1.md §2.9): gate shadows.
-NEUTRAL: NeutralCalibration | None = None
+# sentiment's System 1 calibration (design §2.9), measured: lab 2026-09-26: aiagent
+# 0.7.0 shadow run at --resample 3, docs.jsonl 396eef0c (120 Wikipedia articles,
+# en/de/hr), teacher openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784; tau 0.96
+# (D9), confirmed by lab 2026-09-27: confirm.jsonl 55369be0 (120 fresh Wikipedia
+# articles, en/de/hr), (a) 455/468, CP bound 0.9562; (b) p95 |delta| 0.4040 over 117
+# documents
+# n = 472 accepted neutral segments at τ 0.96. Pass test at τ 0.96: (a) 462/472 in (-2,
+# +2), CP lower bound 0.9643; (b) p95 |Δ| 0.3400 over 114 documents, mean Δ -0.0086:
+# PASS.
+# model is from --model for the 1110 of 1110 analysed lines that name none (aiagent
+# 0.7.0): the log alone does not show it for them.
+# score_signature_sha256 is SCORE_SIGNATURE_SHA256 of the aiagent this script imported:
+# pin it only if the lab's run scored with a ScoreSegment of that same hash.
+NEUTRAL: NeutralCalibration | None = NeutralCalibration(
+    artifact_id="a866e0a4734f66ddb975ac1d2e41780c8961913cf6fa738ef53b6bc7b843e273",
+    score_signature_sha256=(
+        "b26dee349163d3219febe678ead8fd8feb1c8e13e3c0469a883f7e3cb7febc96"
+    ),
+    model="openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink",
+    tau=0.96,
+    level=-0.02,
+    se=0.0332,
+    sigma_between=0.6832,
+    sigma_within=0.4039,
+    n=472,
+    measured=(
+        "lab 2026-09-26: aiagent 0.7.0 shadow run at --resample 3, docs.jsonl 396eef0c "
+        "(120 Wikipedia articles, en/de/hr), teacher "
+        "openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784; tau 0.96 (D9), "
+        "confirmed by lab 2026-09-27: confirm.jsonl 55369be0 (120 fresh Wikipedia "
+        "articles, en/de/hr), (a) 455/468, CP bound 0.9562; (b) p95 |delta| 0.4040 "
+        "over 117 documents"
+    ),
+)
 
 
 class ExplainSentiment(dspy.Signature):  # type: ignore[misc]  # dspy ships no stubs
