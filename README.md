@@ -21,7 +21,7 @@ Installs to `~/.local` by default. Override the prefix, or pin a version, via en
 
 ```bash
 curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | sudo AIAGENT_PREFIX=/usr/local sh
-curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_VERSION=v0.1.0 sh
+curl -fsSL https://github.com/devitops-com/aiagent/releases/latest/download/install.sh | AIAGENT_VERSION=v0.8.0 sh
 ```
 
 The installed files belong to whoever runs the installer (root for a system
@@ -69,8 +69,8 @@ gh attestation verify aiagent-install.sh --repo devitops-com/aiagent
 sh aiagent-install.sh
 ```
 
-Releases up to v0.3.1 were built on the maintainer's machine and have no
-attestation: with `AIAGENT_VERSION` set to one of them, `AIAGENT_VERIFY=1` fails.
+Every published release (v0.4.0 and later) was built and attested by GitHub
+Actions; earlier versions are no longer published.
 
 ## Quick examples
 
@@ -96,9 +96,10 @@ shadow run, and the runs that calibrate `sentiment` to use the student.
 ## Documentation
 
 The **[User Manual](docs/USER_MANUAL.md)** documents every implemented feature in
-detail: all CLI commands, configuration and model strings, the self-optimizing
-expense demo, datasets and metrics, writing your own skills, plus development,
-packaging, releasing, and deploying as a devai agent.
+detail: all CLI commands (including `sentiment` and System 1 distillation, shadow
+and gate), configuration and model strings, the self-optimizing expense demo,
+datasets and metrics, writing your own skills, plus development, packaging,
+releasing, and deploying as a devai agent.
 
 The **[System 1 walkthrough](docs/SYSTEM1_WALKTHROUGH.md)** is the record of the first System 1
 campaign, end to end: a teacher LLM labels a corpus, devai trains a small student on it,

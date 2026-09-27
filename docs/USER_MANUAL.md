@@ -146,7 +146,8 @@ aiagent doctor --offline --json       # config check for a script: exit 2 on a c
 | `--timeout <s>` | Per-probe timeout in seconds (default: configured `request_timeout_s`). |
 | `--json` | Emit a JSON report. |
 
-**Exit codes:** `0` healthy · `1` unreachable or degraded · `2` config error.
+**Exit codes:** `0` healthy · `1` unreachable or degraded · `2` config error. On a
+config error `--json` prints no JSON: the message goes to stderr.
 
 The report includes `api_base`, the effective `model` (or default alias), health
 status, the models endpoint status, and the list of advertised model IDs. If the
@@ -268,7 +269,7 @@ aiagent skills list --source user      # user skills only (~/.config/aiagent/ski
 aiagent skills list --json             # with each skill's model alias and any skipped manifests
 ```
 
-**Output** (the built-in skills; user skills follow with source `user`):
+**Output** (the built-in skills, descriptions trimmed here; user skills follow with source `user`):
 
 ```text
 chat           builtin  Basic resumable multi-turn Q&A against the configured model (a minor …
@@ -372,8 +373,8 @@ aiagent run sentiment --jsonl texts.jsonl > scores.jsonl     # many separate tex
 | `--file`, `-f <path>` | Local file (repeatable): `.pdf` and `.html`/`.htm`/`.xhtml` are converted to text, any other file (`.txt`, `.md`, …) is read as UTF-8 text. |
 | `--url`, `-u <url>` | `http`/`https` URL to fetch and analyze via the proxy (repeatable); the response's content type picks PDF, HTML or plain text. |
 | `--model <alias\|name>` | Model override. |
-| `--resample <n>` | LLM samples per segment (default 1). 2 or more measure model uncertainty; `--resample 3` takes about three times the LLM calls and time. |
-| `--max-segments <n>` | Cap on analyzed segments; content is merged, never dropped (default 24). |
+| `--resample <n>` | LLM samples per segment (default 1; values below 1 count as 1). 2 or more measure model uncertainty; `--resample 3` takes about three times the LLM calls and time. |
+| `--max-segments <n>` | Cap on analyzed segments; content is merged, never dropped (default 24; values below 1 count as 1). |
 | `--json` | Emit the full result (scores, stats, per-segment breakdown, sources) as JSON. |
 | `-v` / `-vv` / `-vvv` | Increase verbosity. |
 
@@ -438,7 +439,9 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
 
 - **shadow**: the LLM scores every segment as in off mode, so the statistics are
   off mode's. Run it on the target corpus first: a calibration is measured from its
-  log.
+  log, taken at `--resample 3`, with `tools/system1/sentiment_calibration.py` from a
+  checkout of the repository (it is not in the installed bundle): see the
+  [walkthrough](SYSTEM1_WALKTHROUGH.md), phases 8-10.
 - **gate**: a segment the student calls `neutral` with a confidence of at least the
   higher of two thresholds gets no LLM call: the student's τ (polarity's installed
   τ, or `system1_min_conf`) and the calibration's own τ. It scores one calibrated
@@ -461,7 +464,13 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
   the pinned one, ignoring only the `@<ctx>` context window: another model, or
   `::think` where `::nothink` was measured, runs as shadow, with one warning naming
   both. The router may serve another model under the same name; that is not
-  detected.
+  detected. In the devai lab that model is reached with
+  `AIAGENT_API_BASE=http://devai-router:11437/v1` and
+  `AIAGENT_MODEL='Qwen3.8-27B-MTP-devai-NVFP4::mtp'`: `::mtp` is part of the model
+  name, and aiagent appends `::nothink` (and any `@<ctx>`). Check it with
+  `aiagent models list` or the `-v` line; see the
+  [walkthrough](SYSTEM1_WALKTHROUGH.md#3-prerequisites). An LM that reports no model
+  string also runs as shadow.
 - **Use gate only for document corpora that passed the pass test.** It is off by
   default and is enabled per corpus. The pinned calibration covers encyclopedic
   documents like the Wikipedia articles it was measured and confirmed on; another
@@ -488,13 +497,17 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
 - **The explanation** sees the LLM segments' rationales as before. When the gate
   gave segments to the student, it also gets one line, never their text, such as
   `18 of 24 segments neutral (System 1)`.
-- **Cost.** Loading the student takes 1-3 s once per process, then 50-110 ms per
+- **Cost.** Loading the student takes about 1 s once per process, then 50-110 ms per
   segment: for a one-sentence text in a one-shot run the gate is a net loss, so
   batch such texts with `aiagent run sentiment --jsonl` (one load for all of them).
 
 URLs egress through the configured [`proxy_url`](#settings) (devai's pipelock);
 the skill is run-only, so `aiagent run sentiment --text "..."` also works for a
-single text blob.
+single text blob. With `aiagent run sentiment --jsonl` each line (with `--input`, the
+file's one object) is `{"text": "…"}` and may also carry `"resample"` and
+`"max_segments"` (the command's `--resample` and `--max-segments`, default 1 and 24),
+e.g. `{"text": "…", "resample": 3}` for a calibration shadow run. Each result has the
+`--json` keys except `sources`.
 
 **Output.** The human form, here with the default `--resample 1` (so no uncertainty), for
 two sources:
@@ -786,10 +799,10 @@ serves under the same model string is not detected: the served model is not know
 without a network call.
 
 **One-shot cost.** In shadow and gate mode each `aiagent run` loads the student
-first: the multilingual export took 2.81 s to load on a CPU, and its 34 MB
-tokenizer is parsed too. For a single input that can be slower than a warm LLM
-call; the gain is for many inputs, and the shadow log's `student_ms` measures what
-each run paid.
+first: loading the student took about 0.85-1.3 s in the lab (0.54 s parsing its
+34 MB `tokenizer.json`, 0.40 s onnxruntime). For a single input that can be slower
+than a warm LLM call; the gain is for many inputs, and the shadow log's `student_ms`
+measures what each run paid.
 
 **What the gate certifies.** Agreement with the **teacher**, not correctness. The
 labels are the LLM's answers, so a student that copies the LLM's mistakes passes
@@ -802,7 +815,7 @@ instead, and this departure is accepted for now and to be revisited after the
 pilot. Predictors with more
 than one output (the gate does not certify their joint precision), more than one
 input or a non-`str` input, and free-text or `float` outputs. A student shorter
-than the base's 1024 tokens (`label --max-len`), and int8/fp16 students. The
+than the base's 1024 tokens (a future `label --max-len`), and int8/fp16 students. The
 cascade in commands other than `run` and `sentiment`.
 
 #### Examples by subcommand
@@ -1066,13 +1079,13 @@ aiagent — devai agent shell
 
 ```bash
 aiagent version                                  # prints the aiagent version string
-aiagent version | grep -qx 0.7.0 && echo ok      # check the installed version in a script
+aiagent version | grep -qx 0.8.0 && echo ok      # check the installed version in a script
 aiagent version; command -v aiagent              # the version, and which aiagent runs
 ```
 
 ```text
 $ aiagent version
-0.7.0
+0.8.0
 ```
 
 ---
@@ -1095,8 +1108,12 @@ except the router URL it is handed. The devai vars it understands:
 | `OLLAMA_HOST` | `api_base` (with `/v1` appended) |
 | `OPENAI_API_KEY` | `api_key` |
 | `OPENAI_MODEL` / `OLLAMA_DEFAULT_MODEL` | `model` |
-| `CONTEXT` / `AIAGENT_CONTEXT` | `context_tokens` |
+| `AIAGENT_CONTEXT` / `CONTEXT` | `context_tokens` (digits only) |
 | `HTTPS_PROXY` / `HTTP_PROXY` | `proxy_url` |
+
+`AIAGENT_CONTEXT` (set by devai's picker) sits in this layer, below the TOML file;
+`AIAGENT_CONTEXT_TOKENS` is the top-layer override. Lowercase `https_proxy`/`http_proxy`
+work too.
 
 ### Settings
 
@@ -1108,9 +1125,9 @@ the same name. Inspect the resolved result with `aiagent config show`.
 | `api_base` | `http://devai-router:11434/v1` | OpenAI-compatible router base URL. |
 | `api_key` | `local` | API key; must be **non-empty** (LiteLLM rejects empty). devai single-mode has no auth. |
 | `request_timeout_s` | `900` | Per-request timeout; generous, to absorb cold starts. |
-| `num_retries` | `2` | LM retries. Worst-case wait is `(num_retries + 1) * timeout`. |
+| `num_retries` | `2` | LM retries on transient errors only (connection, timeout, 408/409/429, 5xx). Worst-case wait is `(num_retries + 1) * timeout`. |
 | `cache` | `true` | Enable DSPy/LiteLLM response caching. |
-| `proxy_url` | `http://devai-pipelock:8888` | Forward proxy for outbound URL fetches (the `sentiment` skill). Empty string = direct connection. An injected `HTTPS_PROXY`/`HTTP_PROXY` overrides the default. |
+| `proxy_url` | `http://devai-pipelock:8888` | Forward proxy for outbound URL fetches (`sentiment --url`, `distill label --url`). Empty string = direct connection. An injected `HTTPS_PROXY`/`HTTP_PROXY` overrides the default. |
 | `model` | `""` | Effective model name; empty falls back to `default_alias`. |
 | `default_alias` | `default` | Registry alias used when no model is configured. |
 | `default_reasoning` | `nothink` | `think` or `nothink`; the `::<reasoning>` suffix. |
@@ -1170,8 +1187,9 @@ openai/<model>::<reasoning>[@<ctx>]
 **Aliases vs. raw names.** `--model` (and the `model` setting) accepts either a
 registry alias or a raw model name. Anything not found in the registry is treated
 as a literal model name — which is exactly how devai's picker passes names like
-`qwen3.5:9b-q8_0`. When `AIAGENT_MODEL` is set, the `default` alias resolves to it,
-keeping the configured model the single source of truth.
+`qwen3.5:9b-q8_0`. When the `model` setting is set (by `AIAGENT_MODEL`, the TOML
+`model`, or devai's `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`), the `default` alias
+resolves to it, keeping the configured model the single source of truth.
 
 The registry's baked default is a **placeholder** — always confirm the real served
 tag with `aiagent models list`.
@@ -1388,7 +1406,7 @@ make lock            # regenerate requirements*.txt (needed before `make package
 make lock LOCK_ARGS='--upgrade-package anyio'   # also move one locked package
 make package         # build dist/aiagent-install.sh
 make release         # tag + push; CI builds, attests and publishes the release
-make release VERSION=0.6.0   # the same, with the version bump in the release commit
+make release VERSION=X.Y.Z   # the same, bumping pyproject to X.Y.Z in the release commit
 ```
 
 Requires `uv`, which also installs Python 3.14.7, the exact version in
@@ -1411,7 +1429,7 @@ nothing behind.
 ## Packaging
 
 `make package` produces `dist/aiagent-install.sh` — a single **makeself**
-self-extracting, run-once installer (**linux-x86_64**, ~74 MB). It carries a
+self-extracting, run-once installer (**linux-x86_64**, ~74 MiB). It carries a
 relocatable CPython (exactly the X.Y.Z in `.python-version`, now 3.14.7; the build
 fails on any other) with aiagent and every dependency,
 **sourceless-precompiled** (`.pyc` only; nothing compiles at runtime). The
@@ -1453,7 +1471,7 @@ aiagent --help
 ```
 
 `--target DIR` (without `--`) is makeself's own option: it keeps the raw payload
-(~74 MB) in `DIR` and still installs to the default prefix. Choose the prefix with
+(~74 MiB) in `DIR` and still installs to the default prefix. Choose the prefix with
 `AIAGENT_PREFIX` or `-- --prefix DIR`; `-- --target` is refused.
 
 Build deps: `uv`, `makeself`, `curl`, `readelf` (binutils), and a C toolchain (to build the static zstd
@@ -1524,7 +1542,10 @@ containers. Each agent receives only the router URL via env and talks to it over
 the OpenAI-compatible API — aiagent has no devai-specific code; it adapts through
 config env-fallbacks (`AIAGENT_API_BASE` → `OPENAI_BASE_URL` → `OLLAMA_HOST`).
 
-Apply this change set in the **devai** repo:
+devai already carries this change set: aiagent is registered in its
+`scripts/model-picker.py`, and both lab images (`devai-lab-gpu`, `devai-lab-cpu`)
+install the release bundle at build time (aiagent 0.8.0 since 2026-09-27). For the
+record, the change set is:
 
 **1. Register the agent** — `scripts/model-picker.py`, add to `_AGENTS`:
 
@@ -1533,7 +1554,8 @@ Apply this change set in the **devai** repo:
 ```
 
 **2. Launch handler** — in `model-picker.py`'s `_build()`, add a branch (a
-configured subshell where `aiagent run|optimize|eval|chat` are ready):
+configured subshell where `aiagent run|sentiment|eval|optimize|distill|chat` are
+ready):
 
 ```python
 if agent_id == "aiagent":

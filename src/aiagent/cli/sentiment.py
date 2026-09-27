@@ -94,8 +94,8 @@ def sentiment(
     articles): a segment the student calls neutral at confidence 0.96 or more
     gets no LLM call and scores the pinned calibration's level. That
     calibration is for polarity student a866e0a4 on the teacher
-    Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink; with another student, model or
-    ScoreSegment, gate runs as shadow, with a warning.
+    openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink (its @<ctx> aside); with
+    another student, model or ScoreSegment, gate runs as shadow, with a warning.
     """
     settings = get_settings()
     docs = _ingest(text, file, url, settings)

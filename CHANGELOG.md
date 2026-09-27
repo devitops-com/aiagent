@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Documentation brought up to date after 0.8.0.** The walkthrough and design docs no
+  longer call PR 3 and the calibration pin unreleased; the README's version-pin example
+  names a release that exists; the manual's `version`/`make release` examples, the
+  `AIAGENT_CONTEXT` precedence, the retried errors, `run sentiment --jsonl` inputs
+  (`resample`, `max_segments`) and how to reach the pinned model are corrected; the
+  `sentiment` help and `SKILL.md` give the pinned model with its `openai/` prefix; and
+  `install.sh`'s header no longer names v0.1.0 or unattested releases.
+
 ## [0.8.0] - 2026-09-27
 
 ### Added

@@ -1010,8 +1010,8 @@ def test_the_job_names_stay_what_the_repository_rulesets_require(
 
 
 def test_the_release_workflow_runs_on_version_tags_and_proves_the_build_on_prs_only() -> None:
-    """Not on pushes to main: a pull request's run already built the commits its fast-forward
-    merge puts there, and the release commit is built by its tag's run."""
+    """Not on pushes to main: a pull request's run already built the tree its merge puts
+    there, and the release commit is built by its tag's run."""
     on = workflow("release.yml")["on"]
 
     assert set(on) == {"push", "pull_request"}

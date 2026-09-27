@@ -1,10 +1,10 @@
 # System 1 in the sentiment skill: design
 
 **Status:** design, 2026-09-26, revision 2; updated 2026-09-27. PR 1 is released in 0.6.0 and
-PR 2 in 0.7.0, shipped uncalibrated (§4, "PR 2 as built"). PR 3 is merged (#23), and the
-pre-registered confirmation run passed (D9, §3), so its follow-up pins the calibration (§4,
-"Pin"); neither is released yet. Gate stays off by default: the owner enables it per document
-corpus, for corpora that passed the pass test (D3, D7).
+PR 2 in 0.7.0, shipped uncalibrated (§4, "PR 2 as built"). PR 3 (#23) and its follow-up that pins
+the calibration (#24; §4, "Pin") are released in 0.8.0 (2026-09-27), after the pre-registered
+confirmation run passed (D9, §3). Gate stays off by default: the owner enables it per document
+corpus, for corpora that passed the pass test (D3, D7); none is enabled yet.
 - A review raised 13 points on revision 1, all applied here (§5). The owner decided D1-D8 on
   2026-09-26: "go with recommendations" (§3), and D9 on 2026-09-27 (§3).
 
@@ -31,7 +31,7 @@ new dependency, no new training campaign.
 
 ## 1. Summary
 
-- **Today (0.5.2):**
+- **Before PR 1 (0.5.2):**
   - `sentiment` splits the text into up to 24 segments.
   - It scores each segment with `ChainOfThought(ScoreSegment)` (an integer from −10 to +10, plus a
     rationale), three times, one call at a time.
@@ -62,7 +62,7 @@ new dependency, no new training campaign.
 
   | Run | `--resample 1` | `--resample 3` | Uncertainty |
   |---|---|---|---|
-  | 0.5.2 today (sequential, cache bug) | 47 s | 47 s | fake (always 0) |
+  | 0.5.2 (sequential, cache bug) | 47 s | 47 s | fake (always 0) |
   | PR 1, off | 16 s | 45 s | `null` at r=1; real at r=3 |
   | PR 2 gate, fresh-500 mix (14% neutral coverage) | 17-19 s | 41-43 s | as off, escalated segments only |
   | PR 2 gate, documents at 70% coverage | 9-11 s | 18-20 s | as above |
@@ -461,7 +461,7 @@ T ≈ [L + n·s]  (System 1 on)  +  r·m·t / S  +  t_e
 
 | Symbol | Meaning | Value and source |
 |---|---|---|
-| L | Student load | **1-3 s.** The manual gives 0.85 s (`USER_MANUAL.md:389`) and 2.81 s (`:424`). Importing numpy, onnxruntime and tokenizers, and reading a 1.3 GB model from a cold page cache, add to it. |
+| L | Student load | **1-3 s.** At design time the manual gave 0.85 s and 2.81 s. Importing numpy, onnxruntime and tokenizers, and reading a 1.3 GB model from a cold page cache, add to it. |
 | s | Student time per segment | 0.08 s (measured: 50-110 ms) |
 | n | Segments | 24 |
 | r | Resamples | 1 or 3 |
@@ -478,7 +478,7 @@ S = 2.6):
 
 | Run | LLM score calls (r = 3) | r = 1, S = 3.18 | r = 3, S = 3.18 | r = 3, S = 1 |
 |---|---|---|---|---|
-| 0.5.2 today (sequential, cache bug) | 24 real + 48 cache hits | 47 s | 47 s | 47 s |
+| 0.5.2 (sequential, cache bug) | 24 real + 48 cache hits | 47 s | 47 s | 47 s |
 | PR 1, off | 72 | 16 s | 45 s | 137 s |
 | gate, 5% (neutral, opinion text) | 68 | 18-20 s | 45-47 s | 134-136 s |
 | gate, 14% (neutral, fresh-500 mix) | 62 | 17-19 s | 41-43 s | 121-123 s |
@@ -886,7 +886,8 @@ under the same name is still not guarded (§2.11, risk 3).
      encyclopedic documents like the Wikipedia articles it was measured and confirmed on
      (D7); another document corpus needs its own shadow run and pass test first.
 
-   Next: the release.
+   Released in 0.8.0 (2026-09-27), with PR 3 (#23); the pin is #24. Next: the owner's gate
+   decisions, per document corpus (D3); none is enabled yet.
 
 ## 5. Critique disposition
 

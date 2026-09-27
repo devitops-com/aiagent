@@ -83,12 +83,17 @@ MVP demo = self-optimizing expense extraction (`{merchant, date, amount}`).
 - `llm/registry.py` (pure, no dspy) → `compose_model_string` produces
   `openai/<model>::<reasoning>[@<ctx>]` (`@<ctx>` outermost/last, per the devai
   router's right-to-left parse). `llm/lm.py` — `build_lm`/`configure_default`/`routing`.
+  `llm/retry_lm.py` — `RetryAwareLM` (status-aware retry of transient errors).
 - `core/` — `pipeline.py` (`Pipeline(dspy.Module)` base), `extract.py`
-  (`ExtractExpense` + `ExtractExpenseModule`), `evaluate.py`.
+  (`ExtractExpense` + `ExtractExpenseModule`), `evaluate.py`, `sentiment.py`
+  (`SentimentModule`, `ScoreSegment`, the `NEUTRAL` pin), `sentiment_stats.py` (pure
+  aggregate + t-test), `segment.py` (`split_segments`).
+- `ingest/` — `sources.py` (`read_file`/`fetch_source` → `SourceDoc`), `fetch.py` (GET
+  via `proxy_url`), `extract_text.py` (HTML, pypdf).
 - `data/loader.py`, `metrics/extraction.py` (dual-use metric), `optimize/harness.py`.
 - `skills/` = the **engine** (base/discovery/registry/loader/router).
-  `builtin_skills/` = shipped skill **content** (`extract`, `chat`, `polarity`),
-  package data. **Keep the split** — never merge engine and content dirs.
+  `builtin_skills/` = shipped skill **content** (`extract`, `chat`, `polarity`,
+  `sentiment`), package data. **Keep the split** — never merge engine and content dirs.
 - `system1/` — the System 1 student layer: `contract.py` (hashing, ids, SHA256SUMS),
   `sequence.py` (laya's input layout on raw `tokenizers`), `runtime.py`
   (onnxruntime), `artifacts.py` (verify/install/load), `cascade.py` (`Student`,
@@ -143,7 +148,7 @@ commit itself: no separate bump commit).
   `system1/runtime.py`).
 - **Config precedence:** `AIAGENT_*` env > TOML (`~/.config/aiagent/config.toml`) >
   devai-injected env (`OPENAI_BASE_URL`/`OLLAMA_HOST`+`/v1`/`OPENAI_API_KEY`/
-  `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`/`CONTEXT`/`HTTPS_PROXY`/`HTTP_PROXY`) >
+  `OPENAI_MODEL`/`OLLAMA_DEFAULT_MODEL`/`AIAGENT_CONTEXT`/`CONTEXT`/`HTTPS_PROXY`/`HTTP_PROXY`) >
   defaults. `api_key` must be **non-empty** (default `"local"`). `proxy_url`
   (default `http://devai-pipelock:8888`) is the forward proxy for outbound URL
   fetches (empty string = direct); httpx trusts the pipelock MITM CA via the
@@ -173,7 +178,7 @@ entrypoint (banner + `exec $SHELL`).
 ## Packaging
 
 `make package` → **makeself** self-extractor `dist/aiagent-install.sh`
-(**linux-x86_64**, ~74 MB): bundled CPython **exactly** `.python-version` (3.14.7;
+(**linux-x86_64**, ~74 MiB): bundled CPython **exactly** `.python-version` (3.14.7;
 X.Y.Z, the single source of truth for the dev venv, CI, the locks'
 `--python-version` and the bundle; `requires-python` keeps the 3.14 floor), **no
 libpython** (PBS links it statically into `bin/python3.14`; the shared
@@ -276,7 +281,8 @@ line (an exported `VERSION` is ignored). It then waits up to
 with `gh run watch` and prints the release URL, or the recovery for a failed run (no
 run showing up: it says where to follow it and still succeeds).
 - `release.yml` runs on PRs and `v*` tags only, **not** on pushes to `main` (a PR run
-  already built the commits its fast-forward merge puts there; the release commit is
+  already built its merge ref, the tree its GitHub merge commit puts there while `main`
+  has not moved (`gh pr merge --merge`; checks not `strict`); the release commit is
   built by its tag's run, which alone gates publishing; a commit pushed to `main` without
   a PR is first built by the next PR or tag); a concurrency group per ref builds a tag
   once and replaces a superseded PR run. Job `installer + smoke test` (read-only token, every run): on
@@ -313,29 +319,33 @@ Repo `devitops-com/aiagent` is **public**; uv-style install:
 `AIAGENT_VERSION`). `AIAGENT_VERIFY=1` (opt-in) runs `gh attestation verify <download>
 --repo devitops-com/aiagent` before running it and fails closed: no `gh`, a failed
 check or any `AIAGENT_VERIFY` other than `0`/`1` means exit 1, nothing run, the
-download removed (releases up to v0.3.1 have no attestation). Non-interactive `make release`: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
+download removed (every published release, v0.4.0 onward, is attested; earlier ones are
+gone, tags only). Non-interactive `make release`: `AIAGENT_RELEASE_ASSUME_YES=1`. The installer
 is the **only distribution**: aiagent is not on PyPI, and the `Private :: Do Not Upload`
 classifier (pinned by a test) makes PyPI reject an accidental upload.
-Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-host-paths.py}`,
+Scripts: `tools/package/{build-binary.sh, startup.sh.in, check-python.sh, check-host-paths.py,
+verify-versions.py}`,
 `tools/release/{release.sh, release-notes.sh}`, `install.sh`,
 `.github/workflows/{ci.yml, audit.yml, release.yml}`.
 
 ## Repository settings (GitHub)
 
-**Not in place yet: applied by hand once the CI release flow is on `main`** (check with
-`gh api repos/devitops-com/aiagent/rulesets`):
+**In place since 2026-09-24** (applied by hand; check with
+`gh api repos/devitops-com/aiagent/rulesets`, `…/rulesets/<id>` and `…/immutable-releases`):
 - Ruleset `main` (default branch): no deletion, no force-push; required checks
   `lint + types + bandit`, `tests + coverage + wheel` and `installer + smoke test`
   (the GitHub Actions app, integration 15368), so rename those jobs only together with
   the ruleset. `pip-audit` is not required (it only runs on lock changes).
 - Ruleset `release-tags` (`refs/tags/v*`): tags cannot be created, moved or deleted.
-- Both let repository admins bypass (`always`): `make release` pushes its release
-  commit straight to `main` and pushes the tag. Everyone else goes through a PR with
-  green checks.
-- Immutable releases on, before the first CI-built release: a published release's
-  assets and tag cannot change (not retroactive: v0.3.1 and earlier stay mutable, and
-  a published release cannot be fixed, so drop-the-tag recovery works only before
-  publish). `gh release create` with files uploads to a draft first, which this allows.
+- Both let repository admins bypass (`always`, RepositoryRole 5): `make release` pushes
+  its release commit straight to `main` and pushes the tag. Anyone else needs the three
+  checks green on the commit (no `pull_request` rule, not `strict`: in practice a PR);
+  today the admin is the only collaborator.
+- Immutable releases on (`…/immutable-releases` → `enabled: true`) since before the
+  first CI-built release: every published release (v0.4.0 onward) is immutable; its
+  assets and tag cannot change, so drop-the-tag recovery works only before publish.
+  v0.3.1 and earlier have no GitHub release any more (tags only). `gh release create`
+  with files uploads to a draft first, which this allows.
 - Optional: secret scanning and push protection; `sha_pinning_required` last, after a
   trial on a branch.
 
@@ -360,15 +370,19 @@ killed runs at the next start. So plain `pytest` / `make test` is enough: no
 
 ## Scope (MVP) / not yet
 
-In: extraction demo, sentiment analysis (files/URLs/text via the `ingest` layer),
-skills, optimize/eval, chat, packaging, System 1 distillation (`distill`, the
-`polarity` pilot). Weight fine-tuning happens in devai's trainer backend; aiagent
+In: extraction demo, sentiment analysis (files/URLs/text via the `ingest` layer;
+System 1 on its neutral segments via the `polarity` student: shadow, or gate with the
+pinned `NEUTRAL`, off by default and only for corpora that passed D3/D7), skills,
+optimize/eval, chat, packaging, System 1 distillation (`distill`, the `polarity`
+pilot). Weight fine-tuning happens in devai's trainer backend; aiagent
 never imports torch. It builds datasets and runs trained students through
 onnxruntime. **Deferred:** MCP, RAG/embeddings (libs kept, not wired), synthetic
 augmentation and multi-output predictors for `distill`.
 
 ## References
 
-Approved plan: `~/.claude/plans/expense-note-is-ok-tingly-nebula.md`.
+Design: `docs/design/{laya-system1-distillation.md, sentiment-system1.md,
+library-service-needs.md}`; user docs: `docs/USER_MANUAL.md`,
+`docs/SYSTEM1_WALKTHROUGH.md`, `README.md`.
 Session memory: `~/.claude/projects/-home-sparavec-git-aiagent/memory/`.
 
