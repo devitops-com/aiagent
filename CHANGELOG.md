@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **A calibration script for `sentiment`'s System 1:**
+  `tools/system1/sentiment_calibration.py` reads a sentiment shadow log (from a
+  shadow run at `--resample 3`) and prints the calibrated level of the neutral
+  segments with its standard error and spread, coverage (overall, by `n_tokens` and,
+  with a corpus sidecar, by source and language), the pass test (band agreement and
+  per-document mean drift) at the installed τ and over a τ sweep, and the
+  `NEUTRAL` block to pin, with every number in `--json`. `--pin-tau T` calibrates
+  and tests at T instead of the installed τ (the verdict and the exit code are then
+  T's), and the block, offered only with it, pins `tau=T`; with `--level L` too it
+  is a confirmation run of a pin fixed in advance, and ends with `CONFIRMATION at τ
+  T, level L: PASS` or `FAIL` instead of a block. The block names the model
+  from the `model` field of the lines it analyses; for lines without one (a 0.7.0
+  log, alone or joined with a newer one), `--model` gives it, and must agree with
+  the model the other lines name.
+- **The sentiment shadow log records the model:** each line gains `model`, after
+  `artifact_id`: the model string of the LM the score calls used, with its `@<ctx>`
+  context window.
+
+### Changed
+- **`sentiment`'s System 1 gate also needs the calibration's model.** A pinned
+  calibration names the model it was measured with (without the `@<ctx>` context
+  window, which does not change the scores). In gate mode, a run whose score calls
+  use another model string (`::think` against `::nothink` included) only shadows,
+  with one warning naming both; so does one whose LM reports no model string, and
+  with no LM at all it warns, then fails as off mode does. It compares the
+  configured model string, not the model the router serves under it.
+- **A `sentiment` calibration carries its own τ.** It names the confidence it was
+  measured and tested at, and in gate mode the student takes a neutral segment only
+  at the higher of that and its own τ (the installed one, or `system1_min_conf`).
+  The `system1` block's `tau` and `accepted` are the gate's; in shadow, and in the
+  shadow log's `would_accept`, they stay the student's own.
+
 ## [0.7.0] - 2026-09-26
 
 ### Added

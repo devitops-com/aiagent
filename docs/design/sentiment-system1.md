@@ -1,9 +1,9 @@
 # System 1 in the sentiment skill: design
 
 **Status:** design, 2026-09-26, revision 2. PR 1 is released in 0.6.0; PR 2 is built, shipped
-uncalibrated (§4, "PR 2 as built"); PR 3 waits for the lab runs.
+uncalibrated (§4, "PR 2 as built"); PR 3 is built and waits for the confirmation run (D9, §3).
 - A review raised 13 points on revision 1, all applied here (§5). The owner decided D1-D8 on
-  2026-09-26: "go with recommendations" (§3).
+  2026-09-26: "go with recommendations" (§3), and D9 on 2026-09-27 (§3).
 
 **Scope:** aiagent only: `core/sentiment.py`, `core/sentiment_stats.py`, `system1/cascade.py`,
 `cli/sentiment.py`, `cli/run.py`, a small lab analysis script, tests and docs. No devai change, no
@@ -86,8 +86,12 @@ new dependency, no new training campaign.
     **σ²(r) = σ_b² + σ_w²/r**. With both parts pinned, one run serves every `--resample`.
 - **The pinned record,** in `core/sentiment.py`, next to `ScoreSegment`, with a comment that cites
   the run:
-  `NeutralCalibration(artifact_id, score_signature_sha256, level, se, sigma_between, sigma_within, n, measured)`.
-  `n` and `se` are reported with it.
+  `NeutralCalibration(artifact_id, score_signature_sha256, model, tau, level, se, sigma_between, sigma_within, n, measured)`.
+  `n` and `se` are reported with it. `model` (PR 3) is the model string of the LM the run
+  scored with, without its `@<ctx>`: the context window does not change the scores, while the
+  model, `::mtp` and `::nothink`/`::think` do (§2.4). `tau` (D9) is the acceptance threshold
+  the calibration was measured and tested at, in (0, 1]: the gate applies it on top of the
+  student's τ (§2.2).
 - **Statistics:**
 
   | Statistic | Computed over |
@@ -141,9 +145,14 @@ new dependency, no new training campaign.
 - **The student answers a segment** only when all of these hold:
   - it can see the whole segment;
   - its top label is `neutral`;
-  - its `answer_confidence` is at least τ: the installed τ (0.894 for `a866e0a4`), or
-    `system1_min_conf` when that is set;
-  - a calibration matching this student and `ScoreSegment` is pinned (§2.4).
+  - its `answer_confidence` is at least the higher of two thresholds (D9):
+    - the student's τ: the installed τ (0.894 for `a866e0a4`), or `system1_min_conf` when
+      that is set;
+    - the calibration's own τ, `NEUTRAL.tau`: the one it was measured and tested at (0.96
+      for the document calibration, D9). A lower `system1_min_conf` therefore cannot reach
+      segments the calibration does not cover;
+  - a calibration matching this student, `ScoreSegment` and the score calls' model (its
+    `@<ctx>` aside) is pinned (§2.4).
 
   The segment then gets **no LLM call at all**.
 - **Every other segment** goes to the LLM with `--resample` samples, exactly as in off mode.
@@ -233,6 +242,12 @@ accepted).**
   - Otherwise the module warns once ("sentiment's System 1 calibration is missing or stale …") and
     shadows.
   - So a new polarity student, or any change to `ScoreSegment`, can never gate with a stale value.
+  - **The model guard (PR 3),** in `forward`, gate only: the LM the score calls use (the `score`
+    predictor's own LM, else dspy's current one, as `Predict` picks it) must report
+    `NEUTRAL.model`, its `@<ctx>` aside. Otherwise, or with no LM (or one whose `model` is not
+    a string), that call shadows, and the module warns once ("… was measured with A, but this
+    run uses B, so it only shadows; recalibrate for B", or "… but this run's score calls have
+    no LM with a model string …").
 - **Lazy imports.**
   - `core/sentiment.py` names `Student` only under `TYPE_CHECKING`.
   - `cli/sentiment.py` imports `aiagent.system1.cascade` only when the mode is not `off`, as
@@ -267,13 +282,14 @@ accepted).**
     | Field | Meaning |
     |---|---|
     | `ts`, `artifact_id` | As in polarity's log. |
+    | `model` | The model string of the LM the score calls used, `@<ctx>` included (PR 3; the 0.7.0 log has none). |
     | `run_id` | Random, one per `forward` call (one document in `run --jsonl`). It groups a document's lines. |
     | `seg_index`, `n_segments` | The segment's position in its run, and the run's segment count. |
     | `doc_sha256` | sha256 of the text given to `forward`. It joins a run to a corpus sidecar (source, language), as the fresh-500 analysis did. |
     | `input_sha256` | sha256 of the segment. |
     | `n_tokens`, `fits` | The segment's student tokens, and whether the student saw it whole. |
     | `student`, `confidence` | The student's top label and its `answer_confidence`; `null` when it did not fit. |
-    | `would_accept` | What the neutral-only gate would have done. |
+    | `would_accept` | The student's neutral-only call at its own τ (installed, or `system1_min_conf`), calibration pinned or not. The gate also needs the calibration's τ (D9), so a gate-mode line can have `true` and LLM samples. |
     | `llm_samples` | The segment's LLM scores, in rollout order; a dropped sample is `null`. |
     | `student_ms` | The student's time for this segment. |
 
@@ -411,7 +427,11 @@ because of that.
 | `n_samples` | LLM samples claimed (cache hits counted) | LLM score samples used in the statistics |
 | `system1` | – | `null` when off or when no student is usable (a warning says why). Otherwise `{mode, student: "polarity/classify", artifact_id, tau, accepted, too_long, coverage}`, where `mode` is the effective mode |
 
-- **`accepted`:** the segments the gate took (gate) or would have taken (shadow).
+- **`accepted`:** the segments the gate took (gate) or would have taken at the student's τ
+  (shadow).
+- **`tau`:** the threshold `accepted` was counted at: in gate the higher of the student's τ and
+  the calibration's (D9), in shadow (a gate the guard turned into shadow included) the
+  student's.
 - **`coverage`:** `accepted / n_segments`.
 - **`student`** is nested so that its float `confidence` cannot be confused with the top-level
   `confidence`, which is a string label.
@@ -441,7 +461,7 @@ T ≈ [L + n·s]  (System 1 on)  +  r·m·t / S  +  t_e
 | n | Segments | 24 |
 | r | Resamples | 1 or 3 |
 | m | Escalated segments | n × (1 − coverage) |
-| t | One warm CoT call | **1.88 s mean, measured** (2026-09-26, devai lab: 24 warm `ScoreSegment` calls one at a time, cache off, fresh-500 texts cut to 1,200 characters, on the teacher `Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784`). The median is 1.67 s and p90 2.50 s. The model uses the mean, since totals are what add up. It was 2 s assumed before. |
+| t | One warm CoT call | **1.88 s mean, measured** (2026-09-26, devai lab: 24 warm `ScoreSegment` calls one at a time, cache off, on the first fresh-500 texts: capped at 1,200 characters, which none reached, so median 136 and at most 855 characters, about a third of a document segment (median 400), on the teacher `Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink@118784`). The median is 1.67 s and p90 2.50 s. The model uses the mean, since totals are what add up. It was 2 s assumed before. |
 | t_e | The explain call | t |
 | S | Speedup at 4 in flight | **3.18, measured** in the same run: the same 24 calls took 14.2 s at 4 in flight against 45.2 s one at a time, with no failures (a call at 4 in flight took 2.19 s, median). The teacher's vLLM runs `--max-num-seqs 4`, so this is the engine's full parallelism. Every process and lab user shares those 4 slots: two aiagent processes at once each get less. r = 3 was not run separately; its calls are the same kind, three times as many. Sentiment runs on the `default` alias, which is not necessarily a 4-slot vLLM backend. On a 1-slot backend S ≈ 1. |
 
@@ -520,11 +540,19 @@ several sources into one text (`cli/sentiment.py:62`).
     The gate-mode mean is computed offline, with LEVEL in place of ȳ on the accepted segments.
   - Over **≥ 100** such documents, the 95th percentile of |Δ| must be **≤ 0.5**. The mean of Δ is
     reported too.
-- **If the test fails at the installed τ,** the log shows whether a higher τ would pass. A per-skill
-  τ is out of scope, so that becomes a follow-up decision.
-- **Pin.** PR 3 adds `NEUTRAL` with the run's `artifact_id` and `ScoreSegment` hash, plus the
-  script and its unit test. The owner then enables `system1_mode.sentiment = "gate"` for the
-  corpora that passed.
+- **If the test fails at the installed τ** (it did, on mean drift: D9, 2026-09-27), the log
+  shows whether a higher τ would pass, and the calibration pins its **own τ**, one at which it
+  passes: `NEUTRAL.tau`, which the gate applies on top of the student's τ (§2.2).
+  - That τ is chosen from the sweep of the same log, so it is **confirmed** before it is
+    pinned: a lab run on a fresh corpus disjoint from the calibration's (D9: 120 fresh
+    Wikipedia articles) tests the pass test at that τ and at the calibration's level, both
+    fixed in advance (`sentiment_calibration.py LOG --pin-tau T --level L`, whose last line
+    reads `CONFIRMATION at τ T, level L: PASS` or `FAIL`).
+  - Pin only if it passes. The calibration pinned is the first run's, measured at T
+    (`--pin-tau T`); the confirmation run calibrates nothing.
+- **Pin.** PR 3 adds `NEUTRAL` with the run's `artifact_id`, `ScoreSegment` hash, model and τ,
+  plus the script and its unit test. The owner then enables `system1_mode.sentiment = "gate"`
+  for the corpora that passed.
 
 ### 2.10 Tests, docs, CHANGELOG
 
@@ -588,7 +616,9 @@ several sources into one text (`cli/sentiment.py:62`).
   - **both entry points:** `aiagent sentiment --json` and `aiagent run sentiment` take this path,
     without the "no installed student" warning;
   - **off mode:** `artifacts_dir` is never read, and `aiagent.system1` is not imported.
-- **PR 3:** the analysis script on a hand-made log, with a known LEVEL, σ, band agreement and Δ.
+- **PR 3:** the analysis script on a hand-made log, with a known LEVEL, σ, band agreement and Δ,
+  also at `--pin-tau` and in the confirmation run; the gate at the higher of the student's and
+  the calibration's τ (D9), with `system1_min_conf` above and below the calibration's.
 - **Existing tests:** the cascade tests stay green after the `Student` extraction. The subprocess
   import test still guarantees that `aiagent.cli.app` loads neither numpy nor onnxruntime.
 
@@ -658,8 +688,10 @@ several sources into one text (`cli/sentiment.py:62`).
      the LLM (`too_long`, visible through `n_tokens`), and coverage falls.
 3. **Stale calibration.**
    - A new polarity student or a `ScoreSegment` change is guarded: the run shadows.
-   - A change of the model behind the `default` alias is **not** guarded, because the served model
-     is not known without a network call. The manual says to recalibrate.
+   - A model change is guarded too (PR 3, §2.4): the configured model string, `::think` or
+     `::nothink` included, must be the calibration's, its `@<ctx>` aside.
+   - A router that serves a different model under the same name is **not** guarded, because the
+     served model is not known without a network call. The manual says to recalibrate.
 4. **Two instruments.** The σ term restores the spread to first order only, and only for a corpus
    like the calibration corpus.
 5. **Selection.**
@@ -686,14 +718,14 @@ several sources into one text (`cli/sentiment.py:62`).
 - **Segmentation:** capping sentiment's segments by student tokens (that changes the 24-segment
   cap).
 - **Thresholds and gates:**
-  - a τ per skill (`system1_min_conf` is global);
+  - a τ per skill (`system1_min_conf` is global). Sentiment's gate gets a threshold of its own
+    only through its calibration's τ (D9), which can raise the student's τ, never lower it;
   - a merged-band gate that accepts when `p_neutral + p_mixed ≥ τ`: more coverage, but it is not
     what was certified.
 - **Explanations:** student rationales, and any change to `ExplainSentiment`, including its adapter.
 - **Other commands:** System 1 in `eval` and `optimize` (sentiment is run-only).
 - **Statistics:** the independence assumption and the z-versus-t CI. They are documented, not
   changed.
-- **Guarding the calibration against a model change.**
 
 ## 3. Owner decisions (2026-09-26)
 
@@ -710,6 +742,34 @@ Each recommendation is the decision:
 | D6 | The default `--resample` is 1. |
 | D7 | Calibrate on the corpus the owner means to gate; without one, about 110 full Wikipedia articles as a stand-in, plus the fresh-500 review run. |
 | D8 | PR 1 is released as 0.6.0. |
+
+**Later, for PR 3: the model guard** (owner decision, 2026-09-26). D2's pin also names the model
+the calibration was measured with: `NEUTRAL.model`, the score calls' model string without its
+`@<ctx>`. Gate with another model string (`::think` against `::nothink` included), or with no LM,
+only shadows (§2.4). This was out of scope before (§2.11); a router that serves another model
+under the same name is still not guarded (§2.11, risk 3).
+
+**D9 (2026-09-27): the calibration's own τ, and a confirmation run.** The owner answered
+"τ 0.96 + confirm run".
+- **Run 1** (the document run, D7): 120 Wikipedia articles (en/de/hr), 1110 segments,
+  `out/docs-shadow.jsonl`. At the installed τ 0.8938 it passed band agreement (672/699, CP
+  lower bound 0.9471) but failed mean drift: p95 |Δ| 0.591 > 0.5 over 119 documents, caused by
+  real out-of-band disagreements.
+- **At τ 0.96 it passes:** (a) 462/472, CP lower bound 0.9643; (b) 114 documents, p95 |Δ|
+  0.340 (bootstrap P(pass) 0.92; fixed-τ held-out pass 0.97). But τ 0.96 was chosen from that
+  sweep.
+- **The decision:**
+  - the calibration pins its **own** τ = 0.96 (`NeutralCalibration.tau`); the gate takes a
+    neutral segment at the higher of that and the student's τ (§2.2);
+  - before pinning, a **confirmation** lab run on 120 fresh Wikipedia articles, disjoint from
+    run 1, tests the pass test at τ 0.96 with run 1's level, both fixed in advance (§2.9);
+  - pin only if it passes.
+- **Run 1's figures at τ 0.96** (independently verified, and reproduced by
+  `sentiment_calibration.py --pin-tau 0.96`): n 472, LEVEL −0.020480 (pinned −0.02), SE
+  0.03323, σ_w 0.4039, σ_b 0.6832, coverage 42.5% of segments; student
+  `a866e0a4734f66ddb975ac1d2e41780c8961913cf6fa738ef53b6bc7b843e273`, model
+  `openai/Qwen3.8-27B-MTP-devai-NVFP4::mtp::nothink`, `ScoreSegment`
+  `b26dee349163d3219febe678ead8fd8feb1c8e13e3c0469a883f7e3cb7febc96`.
 
 ## 4. Delivery
 
@@ -751,7 +811,41 @@ Each recommendation is the decision:
    - the analysis and the pass test;
    - a PR that pins `NEUTRAL`, with the script.
 
-   After that, the owner enables `system1_mode.sentiment = "gate"` for the corpora that passed.
+   **PR 3 as built (so far)** (2026-09-26):
+   - `tools/system1/sentiment_calibration.py`, the analysis script (§2.9), with its unit test: it
+     prints every number of §2.9 and the `NEUTRAL` block to pin. The block's `model` comes from
+     the `model` field of the analysed lines (the first complete run per document; lines left
+     out do not count), or from `--model` for those that have none (0.7.0). Analysed lines of
+     several models, a `--model` that differs from theirs, or lines that name a model only in
+     part (a 0.7.0 log joined with a newer one) without `--model` are bad input (exit 2); with
+     no model at all nothing is pinned. `--model` must have the shape `compose_model_string`
+     gives (`<provider>/<model>::<think|nothink>[@<ctx>]`), and the header, the JSON and the
+     block say how many analysed lines took it.
+   - The model guard (owner decision, 2026-09-26; §3): `NeutralCalibration.model`, compared with
+     the score calls' LM per `forward`, `@<ctx>` aside (`strip_ctx` of `llm/registry.py`, the
+     parse `compose_model_string` uses); another model or no LM shadows, with one warning per
+     module (§2.4). The shadow log gains `model`, after `artifact_id`.
+   - The calibration's own τ (D9, 2026-09-27; §2.2, §2.9):
+     - `NeutralCalibration.tau`, after `model`, must be in (0, 1] (`ValueError` otherwise).
+     - In gate the student takes a segment only when it fits, its label is neutral and its
+       `answer_confidence` is at least max(the student's τ, installed or `system1_min_conf`;
+       `NEUTRAL.tau`).
+     - The shadow log's `would_accept` keeps the student's own call, so logs stay analysable.
+       The `system1` block's `tau` and `accepted` are the gate's in gate mode, and the
+       student's in shadow (a gate the guard turned into shadow included).
+     - The script's `--pin-tau T` calibrates and tests at T: acceptance is fits, neutral and
+       the logged confidence ≥ T. The verdict, the exit code and the slices are then T's; the
+       installed τ stays in the sweep's first row and in the JSON. The block pins `tau=T`, and
+       is offered only with `--pin-tau`: the log only brackets the installed τ.
+     - With `--level L` as well it is the confirmation run: (a) at T, (b) at T and L, no
+       block, and the report ends with `CONFIRMATION at τ T, level L: PASS` or `FAIL`.
+     - The gate compares the unrounded confidence and the script the logged one (4
+       decimals), so they differ only for a confidence less than 5·10⁻⁵ below T: the script
+       accepts it, the gate does not.
+
+   Next (D9): the confirmation run on 120 fresh articles at τ 0.96 and level −0.02; if it
+   passes, pin run 1's block (`--pin-tau 0.96`). After that, the owner enables
+   `system1_mode.sentiment = "gate"` for the corpora that passed.
 
 ## 5. Critique disposition
 

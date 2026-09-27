@@ -24,11 +24,12 @@ many ``forward`` calls run at once (``run --jsonl``).
 student (:attr:`SentimentModule.system1_student`); ``apply_system1`` hands it over
 through :meth:`SentimentModule.use_student`. The student decides each distinct
 segment in order, and the segment's LLM samples go to the pool as soon as it is
-decided. In ``gate`` mode a segment the student calls ``neutral`` at τ or more is
-scored :data:`NEUTRAL`'s calibrated level, with no LLM call; every other segment is
-scored as in off mode. ``shadow`` scores everything as off mode does. Both log one
-line per segment (no text). Gate needs :data:`NEUTRAL` measured for this student and
-this ``ScoreSegment``; otherwise it only shadows.
+decided. In ``gate`` mode a segment the student calls ``neutral`` at the higher of its
+τ and :data:`NEUTRAL`'s own τ or more is scored :data:`NEUTRAL`'s calibrated level, with
+no LLM call; every other segment is scored as in off mode. ``shadow`` scores everything
+as off mode does. Both log one line per segment (no text), whose ``would_accept`` is the
+student's call at its own τ. Gate needs :data:`NEUTRAL` measured for this student, this
+``ScoreSegment`` and the model the score calls use; otherwise it only shadows.
 
 The heavy lifting (segmentation, statistics) lives in pure, dspy-free modules
 (:mod:`aiagent.core.segment`, :mod:`aiagent.core.sentiment_stats`); this module
@@ -46,7 +47,7 @@ import threading
 import uuid
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
@@ -57,6 +58,7 @@ from aiagent.core.pipeline import Pipeline
 from aiagent.core.segment import split_segments
 from aiagent.core.sentiment_stats import SCALE_MAX, SCALE_MIN, summarize
 from aiagent.exceptions import AiagentError, SourceError
+from aiagent.llm.registry import strip_ctx
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -77,6 +79,8 @@ _DECIMALS = 4  # a student confidence or τ in the output and the shadow log
 # Process-wide: every LLM call of every SentimentModule holds a slot. A thread
 # never holds one while it waits for its own pool, so nested pools cannot deadlock.
 _IN_FLIGHT = threading.BoundedSemaphore(MAX_IN_FLIGHT)
+# `run --jsonl` runs one module's forward in several threads: one model warning each.
+_MODEL_WARNING_LOCK: Final = threading.Lock()
 
 _Sample = tuple[float, str]  # (score, rationale)
 
@@ -99,15 +103,20 @@ class NeutralCalibration:
     """What a segment the student calls neutral scores, from a sentiment shadow run.
 
     ``level`` is the mean LLM score of the segments the neutral-only gate would have
-    taken, with its standard error ``se`` over ``n`` segments. ``sigma_between`` and
-    ``sigma_within`` split the spread of those segments' LLM means around it (σ_b, and
-    σ_w of one sample), so a student score stands in for an r-sample LLM mean with
-    :meth:`variance`. It holds for the student ``artifact_id`` and the ``ScoreSegment``
-    hashed in ``score_signature_sha256`` only; ``measured`` names the run.
+    taken at ``tau``, with its standard error ``se`` over ``n`` segments.
+    ``sigma_between`` and ``sigma_within`` split the spread of those segments' LLM means
+    around it (σ_b, and σ_w of one sample), so a student score stands in for an r-sample
+    LLM mean with :meth:`variance`. It holds for the student ``artifact_id``, the
+    ``ScoreSegment`` hashed in ``score_signature_sha256`` and the LM ``model`` (as
+    :func:`calibration_model` names it) only, and for segments at ``tau`` or more: the
+    acceptance threshold it was measured and tested at, which the gate applies on top of
+    the student's own τ. ``measured`` names the run.
     """
 
     artifact_id: str
     score_signature_sha256: str
+    model: str
+    tau: float
     level: float
     se: float
     sigma_between: float
@@ -115,9 +124,25 @@ class NeutralCalibration:
     n: int
     measured: str
 
+    def __post_init__(self) -> None:
+        if not 0 < self.tau <= 1:  # also rejects nan
+            raise ValueError(
+                f"NeutralCalibration.tau must be in (0, 1], got {self.tau!r}"
+            )
+
     def variance(self, resample: int) -> float:
         """σ²(r) = σ_b² + σ_w²/r: a student score against an r-sample LLM mean."""
         return self.sigma_between**2 + self.sigma_within**2 / resample
+
+
+def calibration_model(lm_model: str) -> str:
+    """An LM's model string as a calibration names it: without a trailing "@<ctx>".
+
+    The context window does not change the scores; everything else does and is kept
+    (the provider prefix, "::mtp", "::nothink" or "::think"). The suffix is
+    compose_model_string's, as :func:`aiagent.llm.registry.strip_ctx` knows it.
+    """
+    return strip_ctx(lm_model)
 
 
 # signature_sha256(ScoreSegment), pinned: a test fails when ScoreSegment changes, since
@@ -163,7 +188,8 @@ def _sha256(text: str) -> str:
 
 
 def _would_accept(verdict: Verdict | None) -> bool:
-    """The neutral-only gate's call on one verdict: whole, neutral, at τ or more."""
+    """The neutral-only call at the student's τ: whole, neutral, at τ or more (the
+    shadow log's would_accept, whatever the calibration)."""
     return (
         verdict is not None and verdict.clears_tau and verdict.label == NEUTRAL_LABEL
     )
@@ -178,12 +204,27 @@ class _System1:
     shadow_log: Path
     neutral: NeutralCalibration | None  # set iff the gate may score segments
 
+    @property
+    def tau(self) -> float:
+        """The confidence a neutral answer needs: the student's τ, and in a calibrated
+        gate the higher of that and the calibration's."""
+        if self.neutral is None:
+            return self.student.tau
+        return max(self.student.tau, self.neutral.tau)
+
     def consult(self, segment: str) -> Verdict | None:
         return self.student.consult(self.student.state(segment))
 
+    def accepts(self, verdict: Verdict | None) -> bool:
+        """Whole, neutral, at :attr:`tau` or more: taken in gate, would be in shadow."""
+        confidence = None if verdict is None else verdict.answer_confidence
+        return (
+            _would_accept(verdict) and confidence is not None and confidence >= self.tau
+        )
+
     def takes(self, verdict: Verdict | None) -> bool:
         """True when the student scores this segment in place of the LLM."""
-        return self.neutral is not None and _would_accept(verdict)
+        return self.neutral is not None and self.accepts(verdict)
 
 
 class SentimentModule(Pipeline):
@@ -200,12 +241,14 @@ class SentimentModule(Pipeline):
         self.score = dspy.ChainOfThought(ScoreSegment)
         self.explain = dspy.Predict(ExplainSentiment)
         self._system1: _System1 | None = None
+        self._model_warned = False  # under _MODEL_WARNING_LOCK
 
     def use_student(self, student: Student, mode: Mode, shadow_log: Path) -> None:
         """Consult `student` on every segment from now on (apply_system1 calls this).
 
         Gate needs :data:`NEUTRAL` measured for this student and the current
-        ``ScoreSegment``; otherwise it warns once and only shadows.
+        ``ScoreSegment``; otherwise it warns once and only shadows. The model is checked
+        per ``forward``, against the LM the score calls use then.
         """
         from aiagent.distill.questions import signature_sha256  # lazy: aiagent.system1
 
@@ -237,12 +280,16 @@ class SentimentModule(Pipeline):
 
         passes = max(1, resample)
         system1 = self._system1
+        model = None
+        if system1 is not None:
+            model = self._score_model()
+            system1 = self._model_checked(system1, model)
         scored, verdicts = self._score_distinct(
             list(dict.fromkeys(segments)), passes, system1
         )
         seg_samples, seg_rationales = _per_position(segments, scored)
         if system1 is not None:
-            _log_shadow(system1, text, segments, scored, verdicts)
+            _log_shadow(system1, model, text, segments, scored, verdicts)
 
         n_student = sum(1 for segment in segments if segment not in scored)
         level = variance = 0.0
@@ -308,6 +355,42 @@ class SentimentModule(Pipeline):
             system1=_system1_block(system1, segments, verdicts),
             explanation=explanation,
         )
+
+    def _score_model(self) -> str | None:
+        """The model string of the LM the score calls use, as Predict picks it: the
+        predictor's own LM, else dspy's current one; None without an LM, or when
+        its `model` is not a string."""
+        lm = self.score.predict.lm or dspy.settings.lm
+        model = getattr(lm, "model", None)
+        return model if isinstance(model, str) else None
+
+    def _model_checked(self, system1: _System1, model: str | None) -> _System1:
+        """`system1` for one forward: a gate whose calibration was measured with another
+        model than `model` (or with none: `model` None) only shadows; one warning per
+        module."""
+        calibration = system1.neutral
+        if calibration is None or (
+            model is not None and calibration_model(model) == calibration.model
+        ):
+            return system1
+        with _MODEL_WARNING_LOCK:
+            warn, self._model_warned = not self._model_warned, True
+        if warn and model is None:
+            logger.warning(
+                "sentiment's System 1 calibration was measured with %s, but this run's "
+                "score calls have no LM with a model string, so it only shadows",
+                calibration.model,
+            )
+        elif warn and model is not None:
+            used = calibration_model(model)
+            logger.warning(
+                "sentiment's System 1 calibration was measured with %s, but this run "
+                "uses %s, so it only shadows; recalibrate for %s",
+                calibration.model,
+                used,
+                used,
+            )
+        return replace(system1, mode="shadow", neutral=None)
 
     def _score_distinct(
         self, segments: list[str], passes: int, system1: _System1 | None
@@ -429,11 +512,12 @@ def _student_answer(verdict: Verdict | None) -> dict[str, Any] | None:
 def _system1_block(
     system1: _System1 | None, segments: list[str], verdicts: dict[str, Verdict | None]
 ) -> dict[str, Any] | None:
-    """The output's ``system1`` summary; None when no student gave a verdict."""
+    """The output's ``system1`` summary; None when no student gave a verdict. Its
+    ``tau`` and ``accepted`` are the gate's (gate) or the student's alone (shadow)."""
     if system1 is None or all(verdicts[s] is None for s in segments):
         return None
     installed = system1.student.installed
-    accepted = sum(_would_accept(verdicts[s]) for s in segments)
+    accepted = sum(system1.accepts(verdicts[s]) for s in segments)
     too_long = sum(
         1 for s in segments if (verdict := verdicts[s]) is not None and not verdict.fits
     )
@@ -441,7 +525,7 @@ def _system1_block(
         "mode": system1.mode,
         "student": f"{installed.skill}/{installed.predictor}",
         "artifact_id": installed.artifact_id,
-        "tau": round(system1.student.tau, _DECIMALS),
+        "tau": round(system1.tau, _DECIMALS),
         "accepted": accepted,
         "too_long": too_long,
         "coverage": round(accepted / len(segments), 3),
@@ -450,19 +534,22 @@ def _system1_block(
 
 def _log_shadow(
     system1: _System1,
+    model: str | None,
     text: str,
     segments: list[str],
     scored: dict[str, list[_Sample | None]],
     verdicts: dict[str, Verdict | None],
 ) -> None:
     """One shadow-log line per segment position the student gave a verdict on (no
-    text), all written at once; a failure only warns."""
+    text), all written at once; `model` is the score calls' LM model string, "@<ctx>"
+    included. A failure only warns."""
     from aiagent.system1.cascade import append_shadow  # loaded by apply_system1
 
     run_id = uuid.uuid4().hex  # groups one forward's lines
     common = {
         "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "artifact_id": system1.student.installed.artifact_id,
+        "model": model,
         "run_id": run_id,
     }
     doc_sha256 = _sha256(text)

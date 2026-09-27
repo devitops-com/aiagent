@@ -288,14 +288,25 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
 - **shadow**: the LLM scores every segment as in off mode, so the statistics are
   off mode's. Run it on the target corpus first: a calibration is measured from its
   log.
-- **gate**: a segment the student calls `neutral` at τ or more (polarity's
-  installed τ, or `system1_min_conf`) gets no LLM call. It scores one calibrated
+- **gate**: a segment the student calls `neutral` with a confidence of at least the
+  higher of two thresholds gets no LLM call: the student's τ (polarity's installed
+  τ, or `system1_min_conf`) and the calibration's own τ. It scores one calibrated
   level, the mean LLM score of such segments in a sentiment shadow run, and that
   run's measured spread enters the volatility and the standard error, so a student
   segment never counts as error-free. Every other segment is scored as in off mode.
-  The level is pinned in the code for one student (`artifact_id`) and one
-  `ScoreSegment`; **none is pinned yet**, so gate runs as shadow, with a warning,
-  until a lab run on the target corpus pins one.
+  The level is pinned in the code for one student (`artifact_id`), one
+  `ScoreSegment` and one model; **none is pinned yet**, so gate runs as shadow, with
+  a warning, until a lab run on the target corpus pins one.
+- **The calibration carries its own τ**: the confidence its segments were measured
+  and its pass test run at, which may be above the student's. The gate never takes
+  a segment below it, so a lower `system1_min_conf` cannot reach segments the
+  calibration does not cover; a higher one takes fewer.
+- **Gate also needs the model the calibration was measured with.** It compares the
+  model string of the LM the score calls use (the `model=` that `-v` prints) with
+  the pinned one, ignoring only the `@<ctx>` context window: another model, or
+  `::think` where `::nothink` was measured, runs as shadow, with one warning naming
+  both. The router may serve another model under the same name; that is not
+  detected.
 - **Use gate only for document corpora** that passed that run's test. Review and
   opinion corpora stay off or shadow: on opinion text the student's neutral calls
   are its weakest. `aiagent sentiment` joins its sources into one text, so a call
@@ -308,8 +319,10 @@ fields are under Serving in [`distill`](#distill--train-a-system-1-student)).
   student answered it, in shadow or gate; `null` when it was too long, the student
   failed, or System 1 is off). The top-level `system1` is `null` when off or when no
   student is usable (a warning says why), else `{mode, student, artifact_id, tau,
-  accepted, too_long, coverage}`: `mode` is the effective one, `accepted` the
-  segments the gate took (or, in shadow, would have taken), `coverage` accepted over
+  accepted, too_long, coverage}`: `mode` is the effective one, `tau` the threshold
+  `accepted` was counted at (in gate the higher of the student's and the
+  calibration's, in shadow the student's), `accepted` the segments the gate took
+  (or, in shadow, would have taken at the student's τ), `coverage` accepted over
   `n_segments`. The human output adds a line such as
   `system 1     : 18/24 segments by the student (gate, polarity a866e0a4), 1 too long`
   (in shadow: `would be by the student`).
@@ -510,19 +523,25 @@ The same checks apply to `polarity/classify` (not installed or unbound: sentimen
 stays on the LLM, with a warning naming `polarity/classify`; polarity's skill files
 changed: gate only shadows). In shadow and gate mode it logs to
 `system1/skills/sentiment/score/shadow.jsonl`, one line per segment of each run
-(written together), with no text: `ts`, `artifact_id`, `run_id` (random, one per
+(written together), with no text: `ts`, `artifact_id`, `model` (the model string
+of the LM the score calls used, `@<ctx>` included), `run_id` (random, one per
 document), `seg_index` and `n_segments`, `doc_sha256` (the sha256 of the whole text,
 to join a run to a corpus), `input_sha256` (of the segment), `n_tokens` and `fits`
 (whether the student saw it whole), `student` and `confidence` (its top label and
 that label's confidence; `null` when it did not fit), `would_accept` (whether the
-neutral-only gate takes the segment, calibration pinned or not), `llm_samples` (the
+student calls the segment neutral at its own τ, calibration pinned or not; the gate
+also needs the calibration's τ, so a gate-mode line may have `true` and LLM
+samples), `llm_samples` (the
 LLM's scores in rollout order, `null` for a sample that did not parse; `[]` for a
 segment the gate gave the student) and `student_ms` (the student's time; 0 where a
 repeated segment reused its first verdict). Gate needs a calibration pinned for the
-installed student and the current `ScoreSegment`; otherwise it shadows, with a
-warning. Recalibrate after a new polarity student, a `ScoreSegment` change, or a
-change of the model behind the `default` alias (that one is not detected: the served
-model is not known without a network call).
+installed student, the current `ScoreSegment` and the model in use (its `@<ctx>`
+aside); otherwise it shadows, with a warning. The calibration also names the τ it
+was measured and tested at, and the gate takes a segment only at the higher of that
+and the student's τ. Recalibrate after a new polarity
+student, a `ScoreSegment` change or a model change. A different model the router
+serves under the same model string is not detected: the served model is not known
+without a network call.
 
 **One-shot cost.** In shadow and gate mode each `aiagent run` loads the student
 first: the multilingual export took 2.81 s to load on a CPU, and its 34 MB

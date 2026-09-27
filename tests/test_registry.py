@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from aiagent.llm.registry import (
     ModelSpec,
     compose_model_string,
     get_registry,
     list_model_aliases,
     resolve,
+    strip_ctx,
 )
 
 
@@ -55,6 +58,26 @@ def test_compose_non_numeric_at_suffix_is_left_untouched() -> None:
     # Only a trailing @<int> is treated as ctx; anything else stays in the name.
     spec = ModelSpec(model="org/model@latest")
     assert compose_model_string(spec, "nothink") == "openai/org/model@latest::nothink"
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ModelSpec(model="m"),
+        ModelSpec(model="qwen3.5:9b-q8_0", reasoning="think"),
+        ModelSpec(model="org/model@latest"),
+        ModelSpec(model="SomeModel@131072"),
+        ModelSpec(model="m", ctx=8192),
+    ],
+)
+@pytest.mark.parametrize("ctx", [None, 4096])
+def test_strip_ctx_drops_exactly_the_context_suffix_compose_emits(
+    spec: ModelSpec, ctx: int | None
+) -> None:
+    bare = spec.model_copy(update={"model": spec.model.removesuffix("@131072"), "ctx": None})
+    assert strip_ctx(compose_model_string(spec, "nothink", ctx)) == compose_model_string(
+        bare, "nothink"
+    )
 
 
 def test_resolve_known_alias() -> None:

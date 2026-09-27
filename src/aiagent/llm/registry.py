@@ -99,6 +99,13 @@ def compose_model_string(
     return f"{spec.provider}/{model}::{reasoning}{ctx_suffix}"
 
 
+def strip_ctx(model_string: str) -> str:
+    """``model_string`` without a trailing ``@<int>`` context suffix, the one
+    :func:`compose_model_string` emits last; anything else is kept."""
+    match = _BAKED_CTX.search(model_string)
+    return model_string if match is None else model_string[: match.start()]
+
+
 def _split_baked_ctx(model: str) -> tuple[str, int | None]:
     """Split a trailing ``@<int>`` context suffix off a model name.
 
