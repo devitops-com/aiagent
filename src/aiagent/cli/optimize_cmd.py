@@ -6,29 +6,60 @@ from pathlib import Path
 
 import typer
 
-from aiagent.cli._common import get_settings
+from aiagent.cli._common import examples, get_settings
 from aiagent.cli._runtime import configure_lm
 from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
 from aiagent.skills.loader import build_metric, build_module, dataset_path
 from aiagent.skills.registry import load_registry
 
+OPTIMIZE_EXAMPLES = examples(
+    (
+        "BootstrapFewShot on the bundled sets; save it for eval --compiled",
+        "aiagent optimize extract --out compiled/extract.json",
+    ),
+    (
+        "MIPROv2 instead: instructions and demos, many more LLM calls",
+        "aiagent optimize extract --optimizer mipro --out compiled/extract.json",
+    ),
+    (
+        "Your own train and dev sets",
+        "aiagent optimize extract --trainset my_train.jsonl --devset my_dev.jsonl",
+    ),
+)
+
 
 def optimize_skill(
     skill: str = typer.Argument(..., help="Skill name."),
-    trainset: Path | None = typer.Option(None, "--trainset", help="Train JSONL."),
-    devset: Path | None = typer.Option(None, "--devset", help="Dev JSONL."),
+    trainset: Path | None = typer.Option(
+        None, "--trainset", help="Train JSONL (default: the skill's own trainset)."
+    ),
+    devset: Path | None = typer.Option(
+        None,
+        "--devset",
+        help="Dev JSONL for the before/after scores (default: the skill's own).",
+    ),
     optimizer: str = typer.Option(
-        "bootstrap", "--optimizer", help="bootstrap | mipro"
+        "bootstrap",
+        "--optimizer",
+        help="bootstrap (BootstrapFewShot) or mipro (MIPROv2).",
     ),
     out: Path | None = typer.Option(
         None, "--out", help="Save the compiled program (state-only JSON) here."
     ),
     model: str | None = typer.Option(None, "--model", help="Model override."),
-    num_threads: int | None = typer.Option(None, "--num-threads"),
+    num_threads: int | None = typer.Option(
+        None, "--num-threads", help="Parallel threads (default: num_threads)."
+    ),
     verbose: int = VERBOSE_OPTION,
 ) -> None:
-    """Optimize a skill against its metric. Requires a reachable router."""
+    """Optimize a skill against its metric. Requires a reachable router.
+
+    Compiles the skill with a DSPy optimizer on the train set. With a dev set it
+    prints the baseline and after scores and the lift; --out saves the program
+    as state-only JSON. Rows are JSONL objects in extract's shape: text,
+    merchant, date and amount. Demo and round counts come from the settings.
+    """
     from aiagent.data.loader import load_expense_set
     from aiagent.optimize.harness import optimize
 

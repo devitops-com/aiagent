@@ -11,7 +11,7 @@ from typing import Any
 
 import typer
 
-from aiagent.cli._common import echo_err, get_settings, print_json
+from aiagent.cli._common import echo_err, examples, get_settings, print_json
 from aiagent.cli._runtime import configure_lm, prediction_to_dict
 from aiagent.cli._verbosity import VERBOSE_OPTION, verbosity_scope
 from aiagent.exceptions import AiagentError
@@ -22,18 +22,46 @@ from aiagent.skills.router import route
 _DEFAULT_CONCURRENCY = 4  # devai's teacher serves 4 requests at once
 _MAX_CONCURRENCY = 16
 
+RUN_EXAMPLES = examples(
+    (
+        "Extract merchant, date and amount from an expense note",
+        'aiagent run extract --text "Taxi to the airport, 38.40 EUR, 2026-03-14"',
+    ),
+    (
+        "Named inputs from a JSON object in a file; the prediction as JSON",
+        "aiagent run extract --input note.json --json",
+    ),
+    (
+        "Many inputs, one JSON object per line; one JSON line out per input",
+        "aiagent run polarity --jsonl reviews.jsonl --concurrency 4 > out.jsonl",
+    ),
+    (
+        "Let aiagent pick the skill from a description",
+        'aiagent run "extract expense fields" --route --text "Taxi 38.40 EUR"',
+    ),
+    (
+        "System 1 shadow: the LLM answers, the student's answer is only logged",
+        "AIAGENT_SYSTEM1_MODE='{\"polarity\":\"shadow\"}' "
+        'aiagent run polarity -t "Late."',
+    ),
+)
+
 
 def run(
     skill: str = typer.Argument(..., help="Skill name (or free text with --route)."),
-    text: str | None = typer.Option(None, "--text", "-t", help="Input text."),
+    text: str | None = typer.Option(
+        None, "--text", "-t", help="Input text (the skill's text input)."
+    ),
     input_file: Path | None = typer.Option(
-        None, "--input", "-i", help="JSON object of inputs."
+        None, "--input", "-i", help="File holding a JSON object of named inputs."
     ),
     model: str | None = typer.Option(None, "--model", help="Model override."),
     use_route: bool = typer.Option(
         False, "--route", help="Treat SKILL as free text and route to a skill."
     ),
-    as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit JSON (--jsonl always prints JSON lines)."
+    ),
     jsonl: Path | None = typer.Option(
         None,
         "--jsonl",
@@ -49,7 +77,13 @@ def run(
     ),
     verbose: int = VERBOSE_OPTION,
 ) -> None:
-    """Run a skill and print its prediction. Requires a reachable router."""
+    """Run a skill and print its prediction. Requires a reachable router.
+
+    Give exactly one of --text, --input or --jsonl. --text fills the skill's
+    text input; --input and --jsonl take JSON objects of named inputs. When
+    system1_mode names the skill (shadow or gate), its installed System 1
+    student runs too: see aiagent distill.
+    """
     settings = get_settings()
     registry, _ = load_registry(settings)
     target = route(skill, registry).skill if use_route else registry.get(skill)

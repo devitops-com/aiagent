@@ -18,26 +18,46 @@ import click
 import typer
 
 from aiagent import __version__
-from aiagent.cli._common import CLI_CONTEXT_SETTINGS
+from aiagent.cli._common import CLI_CONTEXT_SETTINGS, examples
+from aiagent.cli.chat import CHAT_EXAMPLES
 from aiagent.cli.chat import chat as chat_cmd
 from aiagent.cli.config_cmd import config_app
 from aiagent.cli.distill_cmd import distill_app
+from aiagent.cli.doctor import DOCTOR_EXAMPLES
 from aiagent.cli.doctor import doctor as doctor_cmd
-from aiagent.cli.eval_cmd import eval_skill
+from aiagent.cli.eval_cmd import EVAL_EXAMPLES, eval_skill
 from aiagent.cli.models import models_app
-from aiagent.cli.optimize_cmd import optimize_skill
+from aiagent.cli.optimize_cmd import OPTIMIZE_EXAMPLES, optimize_skill
+from aiagent.cli.run import RUN_EXAMPLES
 from aiagent.cli.run import run as run_cmd
+from aiagent.cli.sentiment import SENTIMENT_EXAMPLES
 from aiagent.cli.sentiment import sentiment as sentiment_cmd
+from aiagent.cli.shell import SHELL_EXAMPLES
 from aiagent.cli.shell import shell as shell_cmd
 from aiagent.cli.skills_cmd import skills_app
 from aiagent.exceptions import AiagentError
 
+_ROOT_EXAMPLES = examples(
+    ("Check the router and the resolved configuration", "aiagent doctor"),
+    (
+        "Label a review's polarity",
+        'aiagent run polarity --text "Support was quick, but the fix broke login."',
+    ),
+    (
+        "Score the sentiment of a web page",
+        "aiagent sentiment --url https://example.com/article",
+    ),
+    ("Every command has its own options and examples", "aiagent run --help"),
+)
+
 app = typer.Typer(
     name="aiagent",
     help=(
-        "aiagent — a programmatic DSPy agent: optimize prompts, run goal-reaching "
-        "loops, and process data autonomously over local LLMs."
+        "aiagent — a programmatic DSPy agent over a local, OpenAI-compatible LLM "
+        "router: run skills, analyze sentiment, evaluate and optimize prompts, and "
+        "distill System 1 students."
     ),
+    epilog=_ROOT_EXAMPLES,
     no_args_is_help=True,
     add_completion=False,
     context_settings=CLI_CONTEXT_SETTINGS,
@@ -51,14 +71,24 @@ def _root() -> None:
     # when only one command is registered.
 
 
-@app.command()
+@app.command(
+    epilog=examples(
+        ("Print the installed version", "aiagent version"),
+        (
+            "The version, and which aiagent is first on PATH",
+            "aiagent version; command -v aiagent",
+        ),
+    )
+)
 def version() -> None:
     """Print the aiagent version."""
     click.echo(__version__)
 
 
 # Connectivity / inspection commands (import-light; no dspy).
-app.command("doctor", context_settings=CLI_CONTEXT_SETTINGS)(doctor_cmd)
+app.command("doctor", context_settings=CLI_CONTEXT_SETTINGS, epilog=DOCTOR_EXAMPLES)(
+    doctor_cmd
+)
 app.add_typer(models_app)
 app.add_typer(config_app)
 app.add_typer(skills_app)
@@ -66,12 +96,22 @@ app.add_typer(distill_app)
 
 # Runtime commands. These touch DSPy, but import it lazily inside their handlers,
 # so registering them here keeps `import aiagent.cli.app` dspy-free.
-app.command("run", context_settings=CLI_CONTEXT_SETTINGS)(run_cmd)
-app.command("sentiment", context_settings=CLI_CONTEXT_SETTINGS)(sentiment_cmd)
-app.command("eval", context_settings=CLI_CONTEXT_SETTINGS)(eval_skill)
-app.command("optimize", context_settings=CLI_CONTEXT_SETTINGS)(optimize_skill)
-app.command("chat", context_settings=CLI_CONTEXT_SETTINGS)(chat_cmd)
-app.command("shell", context_settings=CLI_CONTEXT_SETTINGS)(shell_cmd)
+app.command("run", context_settings=CLI_CONTEXT_SETTINGS, epilog=RUN_EXAMPLES)(run_cmd)
+app.command(
+    "sentiment", context_settings=CLI_CONTEXT_SETTINGS, epilog=SENTIMENT_EXAMPLES
+)(sentiment_cmd)
+app.command("eval", context_settings=CLI_CONTEXT_SETTINGS, epilog=EVAL_EXAMPLES)(
+    eval_skill
+)
+app.command(
+    "optimize", context_settings=CLI_CONTEXT_SETTINGS, epilog=OPTIMIZE_EXAMPLES
+)(optimize_skill)
+app.command("chat", context_settings=CLI_CONTEXT_SETTINGS, epilog=CHAT_EXAMPLES)(
+    chat_cmd
+)
+app.command("shell", context_settings=CLI_CONTEXT_SETTINGS, epilog=SHELL_EXAMPLES)(
+    shell_cmd
+)
 
 
 # Typer (>= ~0.16) vendors its own Click, so usage errors raised under
