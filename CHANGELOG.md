@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-27
+
 ### Added
 - **`sentiment`'s System 1 calibration is pinned, so its gate can run.** The
   pre-registered confirmation of owner decision D9 passed (lab 2026-09-27, 120 fresh
